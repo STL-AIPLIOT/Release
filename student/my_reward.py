@@ -92,6 +92,32 @@ APPROACH_SHAPING_FAR_FT = 12000.0
 ANGLE_SHAPING_SPAN_DEG = 180.0
 
 
+M_TO_FT = 3.28084
+
+# WEZ fallbacks, used only when wez_config does not provide them.
+# They match env_config.wez in experiments/student_sac_mlp.yaml.
+DEFAULT_WEZ_ANGLE_DEG = 2.0
+DEFAULT_WEZ_MIN_RANGE_M = 152.4  # 500 ft
+DEFAULT_WEZ_MAX_RANGE_M = 914.4  # 3000 ft
+
+# Hysteresis margins applied on top of the strict WEZ gate. Entry always uses
+# the strict gate; only staying inside uses the relaxed gate. With the defaults
+# above this yields |ata| <= 2.5 deg and 450 ft <= d <= 3200 ft.
+WEZ_HOLD_ANGLE_MARGIN_DEG = 0.5
+WEZ_HOLD_MIN_MARGIN_FT = 50.0
+WEZ_HOLD_MAX_MARGIN_FT = 200.0
+
+# Boundary tolerance. 152.4 m converts to 500.000016 ft, so an exactly-500 ft
+# range would otherwise read as below the floor. These are physically negligible.
+WEZ_RANGE_EPS_FT = 1e-3
+WEZ_ANGLE_EPS_DEG = 1e-9
+
+# Distance at which approach shaping starts (it saturates at the WEZ max range).
+APPROACH_SHAPING_FAR_FT = 12000.0
+# Angle shaping decays linearly over the full [0, 180] deg ATA range.
+ANGLE_SHAPING_SPAN_DEG = 180.0
+
+
 MY_REWARD_CONFIG = {
     "step_penalty": -0.01,
     "win_reward": 100.0,
