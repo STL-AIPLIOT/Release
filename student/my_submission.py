@@ -8,7 +8,9 @@ BUNDLE_DIR 경로와 팀 이름을 설정한 뒤 이 파일을 실행하세요.
 -------------------------------------------
   # RL 모델 사용
   python run_unreal_inference.py --mode rl \\
-      --bundle-dir artifacts/models/team01/v1 \\
+      --bundle-dir artifacts/models/team01/student9_v1 \\
+      --observation-mode custom --observation-module student.my_observation \\
+      --action-repeat 6 \\
       --team-name team01 \\
       --server-ip <서버IP> --server-port 9999
 
@@ -21,7 +23,9 @@ BUNDLE_DIR 경로와 팀 이름을 설정한 뒤 이 파일을 실행하세요.
 
   # RL + BT 하이브리드
   python run_unreal_inference.py --mode hybrid \\
-      --bundle-dir artifacts/models/team01/v1 \\
+      --bundle-dir artifacts/models/team01/student9_v1 \\
+      --observation-mode custom --observation-module student.my_observation \\
+      --action-repeat 6 \\
       --bt-dll AIP_BASE.dll \\
       --bt-rule-xml Rule_팀이름.xml \\
       --hybrid-mode residual --residual-scale 0.35 \\
@@ -66,9 +70,18 @@ SERVER_PORT = 9999
 MODE = "rl"
 
 # RL 모드 설정
-BUNDLE_DIR = "artifacts/models/team01/v1"          # TODO: 학습된 모델 경로
-OBSERVATION_MODE = "tactical16"                    # 학습 시 사용한 관측 모드와 동일해야 함
-OBSERVATION_MODULE = ""                            # custom 관측이면 "student.my_observation"
+# 관측 일관성 체인 5곳 중 여기가 마지막 고리다 (troubleshooting.md §2).
+# experiments/team01_sac_mlp_student9_v1.yaml -> train_rllib CLI ->
+# 번들 metadata.json -> run_local_dogfight.py -> 이 파일.
+# metadata.json이 source of truth이므로, 번들을 바꾸면 그 안의
+# obs_mode / observation_module과 아래 두 줄이 같은지 반드시 대조할 것.
+BUNDLE_DIR = "artifacts/models/team01/student9_v1"  # TODO: 학습된 모델 경로
+OBSERVATION_MODULE = "student.my_observation"      # custom 관측 (student9, 9-D)
+# OBSERVATION_MODULE이 빈 값일 때만 쓰이는 폴백이므로 반드시 *플랫폼* 모드 이름이어야
+# 한다: classic12 | relative14 | tactical16 | legacy37 | custom.
+# YAML의 env.observation_mode / metadata.json의 obs_mode와 같은 값(custom)을 둔다.
+# 훅이 로드되면 describe_observation()["mode"]("student9")가 대신 쓰인다.
+OBSERVATION_MODE = "custom"
 
 # BT 모드 설정
 # - 기본 배포 Rule은 Rule_forTraining.xml입니다.
@@ -93,10 +106,11 @@ DEBUG_ACTION_REPEAT = False
 # =============================================================================
 # 예시: 학습 결과 확인 (로컬 테스트용 백엔드)
 # =============================================================================
-# 경진대회 제출 전 로컬에서 결과 확인:
+# 경진대회 제출 전 로컬에서 결과 확인 (관측 체인 4번째 고리 — 학습과 같은 값이어야 한다):
 #   python run_local_dogfight.py \\
 #       --ownship-backend rl \\
-#       --ownship-bundle-dir artifacts/models/team01/v1 \\
+#       --ownship-bundle-dir artifacts/models/team01/student9_v1 \\
+#       --observation-mode custom --observation-module student.my_observation \\
 #       --target-backend bt \\
 #       --save-log
 
