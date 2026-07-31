@@ -1,0 +1,11 @@
+# Python bytecode.
+# 이 저장소는 한때 3.10 / 3.11 / 3.14 .pyc 를 동시에 담고 있었다. 실행할 때마다
+# 재생성되고 .py 가 갖지 않은 정보는 하나도 없으면서, 커밋마다 diff 만 만든다.
+__pycache__/
+*.pyc
+*.pyo
+
+# 학습 산출물(artifacts/, logs/)은 여기 없다. 이 저장소는 팀이 편집하는
+# student/ + experiments/ 슬라이스이고, train_rllib.py 와 run_local_dogfight.py
+# 는 AIP_LIB\DogFightEnv\Release 에 있다. 그쪽에서 학습을 돌리게 되면 그때
+# artifacts/ 와 logs/ 를 추가한다.
