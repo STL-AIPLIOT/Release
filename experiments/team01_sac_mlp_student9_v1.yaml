@@ -1,0 +1,114 @@
+# team01 SAC MLP — custom student9 observation + student WEZ reward
+#
+# Copied from student_sac_mlp.yaml (templates are never edited in place; the
+# YAML is the experiment record).
+#
+# 실행:
+#   python scripts\run_experiment.py experiments\team01_sac_mlp_student9_v1.yaml --dry-run
+#   python scripts\run_experiment.py experiments\team01_sac_mlp_student9_v1.yaml
+#
+# 이 실험이 baseline과 다른 점:
+#   1. observation_mode: custom + observation_module: student.my_observation
+#      -> 9-D (student9). obs[8]은 속도 벡터에서 직접 구한 closure.
+#      기존 8-D 체크포인트/번들과 호환되지 않는다. 새 tag로 처음부터 학습할 것.
+#   2. reward_module: student.my_reward
+#      -> WEZ 진입 각도 게이트가 angle_deg/2.0 (= update_damage의 대미지 원뿔).
+#      wez.angle_deg는 아래처럼 2.0 그대로 둔다. 절반은 보상 훅이 계산한다.
+
+name: team01_sac_mlp_student9
+script: train_rllib
+
+output:
+  name: team01
+  tag: student9_v1
+
+# 1) 시나리오 선택
+# - observation_mode: classic12 | relative14 | tactical16 | legacy37 | custom
+# - custom 관측을 쓰려면 observation_mode: custom + observation_module 사용
+# - target_mode: fixed | loiter | autopilot | behavior_tree
+env:
+  observation_mode: custom
+  observation_module: student.my_observation
+  target_mode: fixed
+  target_behavior_dll: AIP_BASE_target.dll
+  reward_module: student.my_reward
+  max_engage_time: 60.0
+  episode_step_limit: 3600
+
+# 1+) 세부 환경 설정
+env_config:
+  # my_submission.py의 ACTION_REPEAT / --action-repeat와 반드시 동일해야 한다.
+  step_ratio: 6
+  wez:
+    # 플랫폼 update_damage()가 실제로 쓰는 대미지 원뿔은 이 값의 절반(=1.0도)이다.
+    # 여기서 1.0으로 줄이면 안 된다 — 그러면 실제 원뿔이 0.5도가 된다.
+    angle_deg: 2.0
+    min_range_m: 152.4
+    max_range_m: 914.4
+  target_loiter:
+    enabled: true
+    bank: 30.0
+    pitch: 0.0
+  target_autopilot:
+    heading_cmd: 180.0
+    altitude_cmd: 7000.0
+    speed_cmd: 250.0
+  # reward_module을 쓰면 아래 default 스케일은 사용되지 않는다. 비교 실험을 위해 보존.
+  reward:
+    mode: default
+    step_penalty: -0.01
+    damage_scale: 20.0
+    pursuit_scale: 0.3
+    low_altitude_penalty: 0.1
+    win_reward: 100.0
+    loss_reward: -100.0
+    draw_reward: -30.0
+
+# 2) 학습 알고리즘 + 3) 하이퍼파라미터 + 5) 신경망
+algo:
+  name: sac
+  framework: torch
+  lr: 3.0e-4
+  gamma: 0.99
+  train_batch_size: 256
+  minibatch_size: 256
+  tau: 0.005
+  target_entropy: auto
+  replay_buffer_capacity: 10000
+  mlp:
+    enabled: true
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    head_fcnet_hiddens: []
+    head_fcnet_activation: relu
+
+# 학습 실행 설정 (runtime.iterations는 CLI 덮어쓰기가 없다 — 여기서 바꾼다)
+runtime:
+  iterations: 50
+  num_env_runners: 1
+  num_envs_per_env_runner: 1
+  rollout_fragment_length: auto
+  batch_mode: truncate_episodes
+  checkpoint_frequency: 0
+  save_native_checkpoint: false
+  # 관측 차원이 8 -> 9로 바뀌었으므로 기존 checkpoint/bundle은 재사용 불가.
+  # restore_checkpoint / init_bundle을 student8 산출물로 지정하지 말 것.
+
+dashboard:
+  enabled: true
+  logdir: artifacts/dashboard
+
+policy_probe:
+  enabled: true
+  interval: 10
+  steps: 4
+  print: true
+
+engagement_log:
+  enabled: false
+  interval: 10
+  steps: 600
+  episodes: 1
+  print: true
+
+notes: "student9 관측(closure 포함) + WEZ half-angle 보상. 8-D 산출물과 비호환."
