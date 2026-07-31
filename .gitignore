@@ -1,0 +1,12 @@
+# Python bytecode.
+# 이 저장소는 한때 3.10 / 3.11 / 3.14 .pyc 를 동시에 담고 있었다. 실행할 때마다
+# 재생성되고 .py 가 갖지 않은 정보는 하나도 없으면서, 커밋마다 diff 만 만든다.
+__pycache__/
+*.pyc
+*.pyo
+
+# 학습 산출물. train_rllib.py 가 bundle / checkpoint / dashboard 로그를,
+# run_local_dogfight.py 가 Tacview CSV + summary.json 을 여기에 쓴다.
+# 실험 기록은 experiments/*.yaml 이고 그쪽은 계속 추적한다.
+artifacts/
+logs/
