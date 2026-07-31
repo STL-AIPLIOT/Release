@@ -16,22 +16,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+# experiments/stil_sac_mlp_v1.yaml 과 같은 조건. 정식 실험 기록은 YAML 쪽을 쓰고,
+# 이 파일은 빠르게 값만 바꿔 돌려볼 때 사용한다.
+# observation_module을 비우면 build_command()가 observation_mode를 대신 넘긴다.
 TRAINING_CONFIG = {
-    "team_name": "team01",
-    "output_tag": "v1",
+    "team_name": "stil",
+    "output_tag": "sac_mlp_v1",
     "algorithm": "sac",
-    "iterations": 50,
+    "iterations": 200,
     "reward_module": "student.my_reward",
-    "observation_module": "",
+    "observation_module": "student.my_observation",
 }
 
 
 ENV_CONFIG = {
-    "observation_mode": "tactical16",
-    "target_mode": "behavior_tree",
+    # observation_module이 설정되어 있으면 build_command()가 "custom"을 넘기므로
+    # 아래 값은 module을 비웠을 때의 fallback이다.
+    "observation_mode": "custom",
+    # baseline은 고정 표적으로 수렴을 먼저 본다. BT 스파링은 "behavior_tree".
+    "target_mode": "fixed",
     "target_behavior_dll": "AIP_BASE_target.dll",
-    "max_engage_time": 300.0,
-    "episode_step_limit": 18000,
+    "max_engage_time": 120.0,
+    "episode_step_limit": 7200,
 }
 
 
@@ -43,7 +49,7 @@ RL_CONFIG = {
     "batch_mode": "truncate_episodes",
     "lr": 3e-4,
     "gamma": 0.99,
-    "train_batch_size": 4096,
+    "train_batch_size": 256,
     "minibatch_size": 256,
 }
 
