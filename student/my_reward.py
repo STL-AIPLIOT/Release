@@ -4,12 +4,6 @@
 v1 구조:
     w1*cos(ATA) + w2*cos(AA) + WEZ bonus + dEnergy(소가중치) + 추락 대패널티
 
-<<<<<<< Updated upstream
-Required contract:
-  - MY_REWARD_CONFIG must be a dict.
-  - compute_reward(...) must return (total_reward: float, components: dict).
-  - Each item in components is recorded as ep_reward_<name> by the callbacks.
-=======
 v2에서 추가된 것 (W2 "보상 함수 v1 -> v2 조정"):
     - 거리 shaping 안전 밴드: WEZ 500~3000 ft 진입 보너스 / 500 ft 미만 패널티
     - ATA:AA 가중치 비율 고정 (상쇄 방지, 아래 참조)
@@ -41,11 +35,12 @@ v2에서 추가된 것 (W2 "보상 함수 v1 -> v2 조정"):
     FighterSim.py L244  StateIndex.ALT             -> **METER** (feet 아님)
     src/dogfight/config.py 의 wez.min_range_m / max_range_m 는 500 ft / 3000 ft를
     미터로 환산한 값이다. ft 변환은 WEZ 판정 직전 한 번만 수행한다.
->>>>>>> Stashed changes
 """
 from __future__ import annotations
 
+import math
 import sys
+import weakref
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,8 +52,6 @@ for path in (ROOT, SRC):
 from dogfight.sim.state_schema import StateIndex
 
 
-<<<<<<< Updated upstream
-=======
 M_TO_FT = 3.28084
 G = 9.80665
 DEG_TO_RAD = math.pi / 180.0
@@ -105,7 +98,6 @@ TARGET_SIDE_PREFIX = "target"
 DEGENERATE_ANGLE_EPS_DEG = 1e-9
 
 
->>>>>>> Stashed changes
 MY_REWARD_CONFIG = {
     "step_penalty": -0.005,
     # --- 각도 shaping (상쇄 방지를 위해 pursuit > position 유지) ---
@@ -128,8 +120,6 @@ MY_REWARD_CONFIG = {
 }
 
 
-<<<<<<< Updated upstream
-=======
 def _clip(value: float, low: float, high: float) -> float:
     return low if value < low else (high if value > high else value)
 
@@ -324,7 +314,6 @@ def _wez_thresholds_ft(wez_config: dict) -> tuple[float, float, float]:
     return angle_deg, min_ft, max_ft
 
 
->>>>>>> Stashed changes
 def compute_reward(
     ownship_state,
     target_state,
@@ -337,23 +326,6 @@ def compute_reward(
     truncated: bool,
     end_condition: str,
 ) -> tuple[float, dict]:
-<<<<<<< Updated upstream
-    """Return a small runnable reward example.
-
-    The arguments expose aircraft state, damage, geometry, WEZ settings, and
-    termination status. Add your own tactical components here.
-    """
-    components: dict[str, float] = {
-        "step": float(reward_config.get("step_penalty", -0.01)),
-    }
-
-    # TODO: Add your own shaping terms.
-    # Useful inputs:
-    #   geo_info._get_distance(ownship_state, target_state)
-    #   geo_info._get_antenna_train_angle(ownship_state, target_state, False)
-    #   geo_info._get_aspect_angle(ownship_state, target_state)
-    #   ownship_damage, target_damage, wez_config
-=======
     """(total, components)를 반환한다. 반환값은 항상 finite."""
     cfg = reward_config if isinstance(reward_config, dict) else {}
 
@@ -464,27 +436,18 @@ def compute_reward(
     components["wez_hold"] = wez_hold
     components["overclose"] = overclose
     components["energy"] = energy
->>>>>>> Stashed changes
 
     # --- 종료 ---
     crash = 0.0
     terminal_reward = 0.0
     if terminated or truncated:
-<<<<<<< Updated upstream
-        ownship_health = float(ownship_state[StateIndex.HEALTH])
-        target_health = float(target_state[StateIndex.HEALTH])
-=======
         ownship_health = _finite(_state_value(ownship_state, StateIndex.HEALTH))
         target_health = _finite(_state_value(target_state, StateIndex.HEALTH))
->>>>>>> Stashed changes
         if target_health <= 0.0 < ownship_health:
             terminal_reward = float(reward_config.get("win_reward", 100.0))
         elif ownship_health <= 0.0 < target_health:
             terminal_reward = float(reward_config.get("loss_reward", -100.0))
         else:
-<<<<<<< Updated upstream
-            terminal_reward = float(reward_config.get("draw_reward", -10.0))
-=======
             terminal_reward = _finite(cfg.get("draw_reward", -10.0), -10.0)
 
         # 추락은 무승부보다도 확실히 나쁘게. terminal과 별도 컴포넌트로 기록해
@@ -496,7 +459,6 @@ def compute_reward(
         state._episode_done = True
 
     components["crash"] = crash
->>>>>>> Stashed changes
     components["terminal"] = terminal_reward
 
     return float(sum(components.values())), components
