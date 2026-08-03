@@ -62,13 +62,13 @@ def analyze_episode(ep, window_sec: float, th: Thresholds) -> dict[str, object] 
     bfm_events, bfm_reason = detect_bfm_events(own.time, own, lo, hi, th)
     events += bfm_events
 
-    speed = speed_series(own.time, own.lat, own.lon, own.alt)
+    speed = speed_series(own.time, own.lat, own.lon, own.alt, th.time_scale)
     se = specific_energy_series(own.alt, speed)
-    descent = descent_rate_series(own.time, own.alt)
+    descent = descent_rate_series(own.time, own.alt, th.time_scale)
 
     tgt_se_final = None
     if tgt is not None and len(tgt) >= 2:
-        tspeed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt)
+        tspeed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt, th.time_scale)
         tse = specific_energy_series(tgt.alt, tspeed)
         tgt_se_final = tse[-1] if tse else None
 
@@ -248,6 +248,10 @@ def main() -> int:
     ap.add_argument("--speed-loss", type=float, default=30.0)
     ap.add_argument("--bfm-stuck-sec", type=float, default=10.0)
     ap.add_argument("--bfm-thrash-count", type=int, default=4)
+    ap.add_argument("--step-ratio", type=float, default=6.0,
+                    help="Tacview Time 을 실제 경과 시간으로 바꾸는 배율. "
+                         "학습 env_config.step_ratio 와 같게 준다(배포 YAML 전부 6). "
+                         "이 보정이 없으면 속도/강하율이 step_ratio 배 부풀려진다.")
     ap.add_argument("--output", type=Path, default=Path("analysis/loss_patterns"))
     args = ap.parse_args()
 
@@ -258,6 +262,7 @@ def main() -> int:
         speed_loss_ms=args.speed_loss,
         bfm_stuck_sec=args.bfm_stuck_sec,
         bfm_thrash_count=args.bfm_thrash_count,
+        time_scale=args.step_ratio,
     )
 
     episodes = load_episodes(args.logdir)

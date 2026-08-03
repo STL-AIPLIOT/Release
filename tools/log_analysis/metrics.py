@@ -8,6 +8,25 @@ specific energy 근사를 쓴다:
     specific_energy = g * altitude + 0.5 * speed^2      [J/kg]
 
 이 근사를 쓴다는 사실은 산출물에도 함께 기록한다.
+
+Time 컬럼의 스케일 결함 (2026-08-04 확인)
+-----------------------------------------
+호스트가 쓰는 Time 값은 **실제 경과 시간이 아니다.**
+
+    single_agent_env.py:405  _append_logs()  <- env step 1회마다 1행 추가
+    single_agent_env.py:289  for _ in range(step_ratio)  <- 1 env step = step_ratio 내부 스텝
+    single_agent_env.py:996  time_value = _delta_t * step    (_delta_t = 1/sim_hz = 1/60)
+
+한 행의 실제 경과는 `step_ratio * 1/60` 인데 Time 은 `1 * 1/60` 만 증가한다.
+따라서 **Time 은 실제보다 step_ratio 배 느리게 흐르고**, 이 값을 그대로 나누어 구한
+속도·강하율은 step_ratio 배 부풀려진다.
+
+물리적 확인: 7000 m -> 300 m 강하가 Time 기준 6.9 초면 평균 강하율 969 m/s 로
+F-16 에서 불가능한 값이다. step_ratio(6)를 곱하면 41.6 초 / 162 m/s 로 타당해진다.
+
+`time_scale` 인자로 보정한다. 기본값 1.0 은 **기존 호출부의 동작을 그대로 유지**한다.
+실제 시간으로 환산하려면 `time_scale=step_ratio` (모든 배포 YAML 에서 6)를 넘겨라.
+각도·거리는 시간과 무관하므로 이 결함의 영향을 받지 않는다(ATA/AA/WEZ 는 정확하다).
 """
 from __future__ import annotations
 
@@ -15,6 +34,9 @@ import math
 
 G = 9.80665
 EARTH_R = 6_378_137.0  # WGS84 장반경 [m]
+
+# 모든 배포 experiments/*.yaml 의 env_config.step_ratio 값.
+DEFAULT_STEP_RATIO = 6.0
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -27,17 +49,20 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def speed_series(time: list[float], lat: list[float], lon: list[float],
-                 alt: list[float]) -> list[float]:
+                 alt: list[float], time_scale: float = 1.0) -> list[float]:
     """위치 차분으로 대지속도 [m/s] 를 추정한다.
 
     첫 샘플은 두 번째 값을 복사한다(차분 불가). 계산 불가 구간은 nan.
+
+    time_scale 은 Time 컬럼을 실제 경과 시간으로 바꾸는 배율이다(모듈 설명 참조).
+    기본 1.0 은 보정하지 않는다. 실제 속도를 원하면 step_ratio 를 넘겨라.
     """
     n = min(len(time), len(lat), len(lon), len(alt))
     if n < 2:
         return [math.nan] * n
     out = [math.nan] * n
     for i in range(1, n):
-        dt = time[i] - time[i - 1]
+        dt = (time[i] - time[i - 1]) * time_scale
         if dt <= 0:
             continue
         vals = (lat[i], lon[i], lat[i - 1], lon[i - 1], alt[i], alt[i - 1])
@@ -62,14 +87,18 @@ def specific_energy_series(alt: list[float], speed: list[float]) -> list[float]:
     return out
 
 
-def descent_rate_series(time: list[float], alt: list[float]) -> list[float]:
-    """하강률 [m/s]. 양수 = 하강 중. 계산 불가 구간은 nan."""
+def descent_rate_series(time: list[float], alt: list[float],
+                        time_scale: float = 1.0) -> list[float]:
+    """하강률 [m/s]. 양수 = 하강 중. 계산 불가 구간은 nan.
+
+    time_scale 은 speed_series 와 같은 의미다(모듈 설명 참조).
+    """
     n = min(len(time), len(alt))
     if n < 2:
         return [math.nan] * n
     out = [math.nan] * n
     for i in range(1, n):
-        dt = time[i] - time[i - 1]
+        dt = (time[i] - time[i - 1]) * time_scale
         if dt <= 0 or math.isnan(alt[i]) or math.isnan(alt[i - 1]):
             continue
         out[i] = -(alt[i] - alt[i - 1]) / dt
