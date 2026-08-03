@@ -326,6 +326,36 @@ def test_wez_gate() -> None:
     check(in_wez(500.0, -0.9) is True, "부호는 abs 로 처리")
 
 
+def test_time_scale() -> None:
+    print("\n[11] Tacview Time 스케일 보정")
+    from log_analysis.metrics import descent_rate_series, speed_series
+
+    # 위도 0.001도 = 약 111 m. Time 은 0.1초 간격이지만 실제로는 step_ratio 배다.
+    time = [0.0, 0.1, 0.2]
+    lat = [0.0, 0.001, 0.002]
+    lon = [0.0, 0.0, 0.0]
+    alt = [1000.0, 900.0, 800.0]
+
+    raw = speed_series(time, lat, lon, alt, 1.0)
+    scaled = speed_series(time, lat, lon, alt, 6.0)
+    check(close(raw[1] / scaled[1], 6.0, 1e-6),
+          f"time_scale=6 이면 속도가 정확히 1/6 이 된다 ({raw[1]:.1f} -> {scaled[1]:.1f})")
+    check(close(speed_series(time, lat, lon, alt)[1], raw[1], 1e-9),
+          "기본값 1.0 은 기존 호출부 동작을 그대로 유지한다")
+
+    draw = descent_rate_series(time, alt, 1.0)
+    dscaled = descent_rate_series(time, alt, 6.0)
+    check(close(draw[1], 1000.0, 1e-6), f"보정 전 강하율 1000 m/s (얻은 값 {draw[1]})")
+    check(close(dscaled[1], 1000.0 / 6.0, 1e-6),
+          f"보정 후 강하율 {1000/6:.1f} m/s (얻은 값 {dscaled[1]})")
+
+    # Thresholds 를 통해 events 쪽으로도 전달되는지 확인한다.
+    from log_analysis.events import Thresholds
+
+    check(Thresholds().time_scale == 1.0, "Thresholds 기본 time_scale 은 1.0")
+    check(Thresholds(time_scale=6.0).time_scale == 6.0, "Thresholds 로 배율을 넘길 수 있다")
+
+
 def main() -> int:
     print("PredictManeuver / SCISSORS 분석 테스트")
     with tempfile.TemporaryDirectory() as td:
@@ -340,6 +370,7 @@ def main() -> int:
         test_wraparound_evidence(tmp / "evidence")
         test_scissors(tmp / "scissors")
         test_wez_gate()
+        test_time_scale()
     print("\n" + "=" * 60)
     if _failures:
         print(f"{_failures} / {_checks} 실패")

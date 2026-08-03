@@ -1,5 +1,0 @@
-case_id,case_type,episode_id,result,end_condition,important_timestamp_sec,reason_selected,playback_file
-case_001,C_WEZ_OR_DEFENSE_FAILURE,sac_mlp_obs8_iter400/iter000000_ep00,LOSS,ownship altitude below min,1.1666,"표적이 나를 WEZ 안에 둔 시간 0.05s, 내 체력 손실 0.0714. WEZ/방어 실패로 끝난 패배.",case_001/playback.json
-case_002,D_LOW_ALTITUDE_CRASH,sac_mlp_v1/iter000020_ep00,LOSS,ownship altitude below min,6.3333,end_condition='ownship altitude below min'. 최저 고도 258.5 m 로 최소 고도 아래에서 종료.,case_002/playback.json
-case_003,F_TIMEOUT_DRAW,sac_mlp_obs8_iter400/iter000100_ep00,DRAW,target altitude below min,9.45,"outcome='draw', end_condition='target altitude below min'. 결착 없이 종료.",case_003/playback.json
-case_004,H_ENERGY_REVERSAL,sac_mlp_obs8_iter400/iter000280_ep00,LOSS,ownship altitude below min,2.5333,t=2.53s 에 비에너지 우위가 역전됐고 최저 차이 -213582 J/kg 까지 벌어진 뒤 패배.,case_004/playback.json

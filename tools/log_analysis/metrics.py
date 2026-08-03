@@ -49,17 +49,20 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def speed_series(time: list[float], lat: list[float], lon: list[float],
-                 alt: list[float]) -> list[float]:
+                 alt: list[float], time_scale: float = 1.0) -> list[float]:
     """위치 차분으로 대지속도 [m/s] 를 추정한다.
 
     첫 샘플은 두 번째 값을 복사한다(차분 불가). 계산 불가 구간은 nan.
+
+    time_scale 은 Time 컬럼을 실제 경과 시간으로 바꾸는 배율이다(모듈 설명 참조).
+    기본 1.0 은 보정하지 않는다. 실제 속도를 원하면 step_ratio 를 넘겨라.
     """
     n = min(len(time), len(lat), len(lon), len(alt))
     if n < 2:
         return [math.nan] * n
     out = [math.nan] * n
     for i in range(1, n):
-        dt = time[i] - time[i - 1]
+        dt = (time[i] - time[i - 1]) * time_scale
         if dt <= 0:
             continue
         vals = (lat[i], lon[i], lat[i - 1], lon[i - 1], alt[i], alt[i - 1])
@@ -84,14 +87,18 @@ def specific_energy_series(alt: list[float], speed: list[float]) -> list[float]:
     return out
 
 
-def descent_rate_series(time: list[float], alt: list[float]) -> list[float]:
-    """하강률 [m/s]. 양수 = 하강 중. 계산 불가 구간은 nan."""
+def descent_rate_series(time: list[float], alt: list[float],
+                        time_scale: float = 1.0) -> list[float]:
+    """하강률 [m/s]. 양수 = 하강 중. 계산 불가 구간은 nan.
+
+    time_scale 은 speed_series 와 같은 의미다(모듈 설명 참조).
+    """
     n = min(len(time), len(alt))
     if n < 2:
         return [math.nan] * n
     out = [math.nan] * n
     for i in range(1, n):
-        dt = time[i] - time[i - 1]
+        dt = (time[i] - time[i - 1]) * time_scale
         if dt <= 0 or math.isnan(alt[i]) or math.isnan(alt[i - 1]):
             continue
         out[i] = -(alt[i] - alt[i - 1]) / dt

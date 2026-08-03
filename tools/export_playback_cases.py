@@ -90,7 +90,10 @@ TYPE_HABFM = "G_HABFM_STUCK"
 TYPE_ENERGY = "H_ENERGY_REVERSAL"
 
 FIELD_ORIGIN = {
-    "time_sec": "source (Tacview Time)",
+    "time_sec": ("source (Tacview Time) — **실제 경과 시간이 아니다.** "
+                 "호스트가 env step 1회마다 1행을 쓰면서 Time 은 내부 스텝 1개분"
+                 "(1/60초)만 올린다. 실제로는 step_ratio 배 더 흘렀다."),
+    "derived_real_time_sec": "derived — time_sec * step_ratio. 실제 경과 시간.",
     "own_lat": "source (Tacview Latitude)",
     "own_lon": "source (Tacview Longitude)",
     "own_alt_m": "source (Tacview Altitude, meter)",
@@ -102,8 +105,9 @@ FIELD_ORIGIN = {
     "target_roll_deg": "source", "target_pitch_deg": "source",
     "target_yaw_deg": "source — playback 의 target heading",
     "target_health": "source",
-    "derived_own_speed_ms": "derived — 위치 차분 (Tacview 에 속도 컬럼 없음)",
-    "derived_target_speed_ms": "derived — 위치 차분",
+    "derived_own_speed_ms": ("derived — 위치 차분 (Tacview 에 속도 컬럼 없음). "
+                             "dt 에 step_ratio 보정을 적용했다."),
+    "derived_target_speed_ms": "derived — 위치 차분, step_ratio 보정 적용",
     "derived_distance_m": "derived — NED 유클리드 거리",
     "derived_own_ata_deg": "derived — GeoMathUtil._get_antenna_train_angle 재계산",
     "derived_target_ata_deg": "derived — 표적 기준 ATA",
@@ -190,10 +194,16 @@ def _nan_to_none(v: float | None) -> float | None:
 
 def build_frames(own: Track, tgt: Track, geo: list[GeoSample],
                  predict_by_time: dict[float, dict[str, object]] | None,
-                 ) -> list[dict[str, object]]:
-    """playback.json 의 frames 배열을 만든다."""
-    own_speed = speed_series(own.time, own.lat, own.lon, own.alt)
-    tgt_speed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt)
+                 step_ratio: float = 1.0) -> list[dict[str, object]]:
+    """playback.json 의 frames 배열을 만든다.
+
+    step_ratio 는 Tacview Time 컬럼을 실제 경과 시간으로 바꾸는 배율이다
+    (호스트가 env step 1회마다 1행을 쓰면서 Time 은 내부 스텝 1개분만 올린다).
+    속도·에너지는 이 보정을 적용해 계산하고, `derived_real_time_sec` 로 보정된
+    시각도 함께 담는다. 원본 `time_sec` 은 그대로 둔다.
+    """
+    own_speed = speed_series(own.time, own.lat, own.lon, own.alt, step_ratio)
+    tgt_speed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt, step_ratio)
     own_se = specific_energy_series(own.alt, own_speed)
     tgt_se = specific_energy_series(tgt.alt, tgt_speed)
 
@@ -205,6 +215,7 @@ def build_frames(own: Track, tgt: Track, geo: list[GeoSample],
         g = geo[i]
         row: dict[str, object] = {
             "time_sec": own.time[i],
+            "derived_real_time_sec": own.time[i] * step_ratio,
             "own_lat": _nan_to_none(own.lat[i] if i < len(own.lat) else None),
             "own_lon": _nan_to_none(own.lon[i] if i < len(own.lon) else None),
             "own_alt_m": _nan_to_none(own.alt[i] if i < len(own.alt) else None),
@@ -379,9 +390,10 @@ def score_candidates(episodes: list[Episode], tracks: dict[str, tuple[Track, Tra
             ))
 
         # --- 유형 H: 에너지 역전
-        own_speed = speed_series(own.time, own.lat, own.lon, own.alt)
+        own_speed = speed_series(own.time, own.lat, own.lon, own.alt, args.step_ratio)
         tgt_track = tracks[ep.match_id][1]
-        tgt_speed = speed_series(tgt_track.time, tgt_track.lat, tgt_track.lon, tgt_track.alt)
+        tgt_speed = speed_series(tgt_track.time, tgt_track.lat, tgt_track.lon,
+                                 tgt_track.alt, args.step_ratio)
         own_se = specific_energy_series(own.alt, own_speed)
         tgt_se = specific_energy_series(tgt_track.alt, tgt_speed)
         m = min(len(own_se), len(tgt_se), len(own.time))
@@ -520,7 +532,7 @@ def write_case(outdir: Path, case_id: str, cand: CaseCandidate,
     case_dir.mkdir(parents=True, exist_ok=True)
     ep = cand.episode
 
-    frames = build_frames(own, tgt, geo, predict_by_time)
+    frames = build_frames(own, tgt, geo, predict_by_time, args.step_ratio)
     stride = 1
     if args.max_frames and len(frames) > args.max_frames:
         stride = math.ceil(len(frames) / args.max_frames)
@@ -550,6 +562,15 @@ def write_case(outdir: Path, case_id: str, cand: CaseCandidate,
         "sample_count": len(frames),
         "sample_stride": stride,
         "duration_sec": (frames[-1]["time_sec"] - frames[0]["time_sec"]) if frames else None,
+        "real_duration_sec": ((frames[-1]["time_sec"] - frames[0]["time_sec"]) * args.step_ratio
+                              if frames else None),
+        "step_ratio": args.step_ratio,
+        "time_base_note": (
+            "Tacview Time 컬럼은 실제 경과 시간이 아니다. 호스트가 env step 1회마다 "
+            "1행을 쓰면서 Time 은 내부 스텝 1개분(1/60초)만 올린다"
+            "(single_agent_env.py:405, 289, 996). 실제 경과는 step_ratio 배다. "
+            "속도/에너지는 이 보정을 적용해 계산했고, derived_real_time_sec 에 "
+            "보정된 시각이 들어 있다. 각도·거리는 시간과 무관해 영향이 없다."),
         "units": {"angle": "degree", "distance": "meter", "altitude": "meter",
                   "speed": "meter/second", "time": "second"},
         "angle_conventions": ANGLE_CONVENTIONS,
@@ -663,7 +684,7 @@ def _render_case_report(case_id: str, cand: CaseCandidate,
         f"- 결과: **{playback['result']}** / end_condition: `{playback['end_condition_raw']}`",
         f"- outcome(원문): `{playback['outcome_raw']}`",
         f"- 핵심 timestamp: {playback['key_timestamp_sec']}",
-        f"- 길이: {playback['duration_sec']} 초 / 샘플 {playback['sample_count']}개"
+        f"- 길이: Time 기준 {playback['duration_sec']} 초 / "f"실제 {playback['real_duration_sec']} 초 (step_ratio={playback['step_ratio']}) / "f"샘플 {playback['sample_count']}개"
         f" (stride {playback['sample_stride']})",
         f"- 체력: 아군 {playback['ownship_health']} / 표적 {playback['target_health']}",
         "",
@@ -883,6 +904,11 @@ def main() -> int:
     ap.add_argument("--collision-distance-m", type=float, default=30.0,
                     help="이 거리 이하 최근접을 충돌로 본다")
     ap.add_argument("--habfm-stuck-sec", type=float, default=10.0)
+    ap.add_argument("--step-ratio", type=float, default=6.0,
+                    help="Tacview Time 을 실제 경과 시간으로 바꾸는 배율. "
+                         "학습 env_config.step_ratio 와 같게 준다(배포 YAML 전부 6). "
+                         "호스트가 env step 1회마다 1행을 쓰면서 Time 은 내부 스텝 "
+                         "1개분만 올리기 때문이다. 1 을 주면 보정하지 않는다.")
     ap.add_argument("--energy-warmup-sec", type=float, default=1.0,
                     help="에너지 역전 판정에서 앞쪽 이 시간만큼은 무시한다 "
                          "(속도 차분 추정이 안정되기 전 구간)")

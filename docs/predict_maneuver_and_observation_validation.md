@@ -363,6 +363,52 @@ python tools\export_playback_cases.py --logdir artifacts\logs `
 구간이다(플랫폼 결함 1: `np.sign(0.0) == 0.0`). 그 구간의 ATA **부호**는 믿으면 안 된다.
 뷰어 HUD 에도 경고로 표시된다.
 
+### Tacview `Time` 컬럼은 실제 경과 시간이 아니다 (2026-08-04 확인)
+
+호스트 로깅의 결함이다. 팀 코드와 무관하다.
+
+```python
+single_agent_env.py:405   self._append_logs()          # env step 1회마다 1행
+single_agent_env.py:289   for _ in range(step_ratio)   # 1 env step = step_ratio 내부 스텝
+single_agent_env.py:996   time_value = self._delta_t * step      # _delta_t = 1/sim_hz = 1/60
+```
+
+한 행의 실제 경과는 `step_ratio / 60` 초인데 `Time` 은 `1 / 60` 초만 증가한다.
+즉 **`Time` 은 실제보다 `step_ratio`(=6) 배 느리게 흐른다.**
+
+물리적 확인 — 7000 m → 300 m 강하를 `Time` 기준으로 읽으면:
+
+| 경기 | Time 기준 길이 | 평균 강하율 (Time) | ×6 보정 후 |
+|---|---:|---:|---:|
+| case_001 | 6.93 s | 969 m/s | 162 m/s |
+| case_002 | 6.33 s | 1065 m/s | 177 m/s |
+| case_004 | 8.10 s | 829 m/s | 138 m/s |
+
+`Time` 을 그대로 쓰면 F-16 이 낼 수 없는 값이 나오고, 보정하면 타당해진다.
+속도도 마찬가지로 1800 m/s → 300 m/s 가 된다.
+
+**영향 범위**
+
+| 값 | 영향 |
+|---|---|
+| 속도, 강하율, specific energy | `step_ratio` 배 부풀려진다 → 보정 필요 |
+| ATA / AA / 거리 / WEZ | **영향 없음.** 시간과 무관한 순간값이다. |
+| 경기 길이 | `Time` 기준 값은 실제의 1/6 |
+
+**대응**
+
+- `log_analysis/metrics.py` 의 `speed_series` / `descent_rate_series` 에 `time_scale`
+  인자를 추가했다. **기본값 1.0 은 기존 호출부 동작을 그대로 유지**한다.
+- `export_playback_cases.py --step-ratio` (기본 6) 가 보정을 적용하고,
+  `playback.json` 의 각 프레임에 `derived_real_time_sec` 를 함께 담는다.
+  원본 `time_sec` 은 손대지 않는다.
+- `analyze_loss_patterns.py --step-ratio` (기본 6) 도 같은 보정을 쓴다.
+  이 값을 바꾸면 `--descent-rate` / `--speed-loss` 임계값의 의미도 함께 바뀐다.
+- 뷰어는 실제 시각을 먼저 보여주고 원본 `Time` 을 괄호로 덧붙이며, 재생 속도도
+  실제 시각에 맞춘다.
+
+`step_ratio` 를 6 이 아닌 값으로 학습했다면 `--step-ratio` 를 그 값으로 바꿔야 한다.
+
 파생 결과가 맞는지에 대한 교차 확인: `case_001` 에서 `WEZ_ENTER_TARGET` 시각과
 원본 체력이 처음 깎인 `OWN_DAMAGE` 시각이 같은 프레임에서 일치한다. 파생 WEZ 판정이
 환경의 `update_damage` 와 같은 시점에 켜졌다는 뜻이다.

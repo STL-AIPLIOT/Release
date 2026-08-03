@@ -343,7 +343,8 @@ async function openCase(id){
   document.getElementById("pbMain").innerHTML=`
     <h2 style="margin:0 0 4px;font-size:14px">${d.case_id} · ${d.case_type}</h2>
     <div class="sub">${d.episode_id} · 결과 <b>${d.result}</b> · 종료 <code>${d.end_condition_raw}</code>
-      · 길이 ${fmt(d.duration_sec,2)}s · 샘플 ${d.sample_count}(stride ${d.sample_stride})</div>
+      · 길이 ${fmt(d.real_duration_sec,2)}s(실제) / ${fmt(d.duration_sec,2)}s(Time 컬럼)
+      · 샘플 ${d.sample_count}(stride ${d.sample_stride})</div>
     <div class="note">선정 이유: ${d.reason_selected}</div>
     <div class="ctl">
       <button id="pbPlay">▶ 재생</button>
@@ -368,6 +369,7 @@ async function openCase(id){
       ATA·AA·WEZ·속도·에너지는 다시 계산한 <code>derived_*</code> 값이다.
       ${hasBfm?"BFM/SCISSORS 는 PredictManeuver CSV 에서 왔다.":"BFM/SCISSORS 는 이 케이스에 없다(PredictManeuver CSV 미첨부)."}
       <br>단위: 각 ${d.units.angle} · 거리 ${d.units.distance} · 속도 ${d.units.speed} · 시간 ${d.units.time}
+      <br><b>시간축</b>: ${d.time_base_note||"(정보 없음)"}
       <br>WEZ 게이트: ${d.wez_config.min_range_m}~${d.wez_config.max_range_m} m, ${d.wez_config.note}
       ${conv}</div>
     <div><a class="dl" href="/playback/file?id=${encodeURIComponent(id)}&name=playback.json" download>playback.json 내려받기</a>
@@ -426,7 +428,9 @@ function startPlay(){
   const step=()=>{
     if(!pbPlaying||!PB) return;
     if(pbIndex>=PB.frames.length-1){ stopPlay(); return; }
-    const dt=(PB.frames[pbIndex+1].time_sec-PB.frames[pbIndex].time_sec)*1000/pbSpeed;
+    // 실제 경과 시각이 있으면 그것으로 재생 속도를 맞춘다(Time 컬럼은 step_ratio 배 느리다).
+    const key = PB.frames[0].derived_real_time_sec!==undefined ? "derived_real_time_sec" : "time_sec";
+    const dt=(PB.frames[pbIndex+1][key]-PB.frames[pbIndex][key])*1000/pbSpeed;
     seek(pbIndex+1);
     pbTimer=setTimeout(step, Math.max(8, isFinite(dt)?dt:33));
   };
@@ -447,7 +451,11 @@ function setupCanvas(cv,h){
 function renderAll(){
   if(!PB) return;
   const f=PB.frames[pbIndex];
-  document.getElementById("pbClock").textContent=fmt(f.time_sec,3)+" s";
+  // Time 컬럼은 실제 경과가 아니다. 실제 시각을 먼저 보이고 원본을 괄호로 덧붙인다.
+  const real=f.derived_real_time_sec;
+  document.getElementById("pbClock").textContent =
+    (real===undefined||real===null ? fmt(f.time_sec,3)+" s"
+     : `${fmt(real,2)} s (Time ${fmt(f.time_sec,3)})`);
   renderHud(f); renderTimeline(); renderMap(); renderAlt(); renderAngles();
 }
 

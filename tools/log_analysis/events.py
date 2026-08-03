@@ -46,18 +46,22 @@ class Thresholds:
     speed_loss_ms: float = 30.0            # 구간 내 속도 감소량이 이 값 이상이면 손실
     bfm_stuck_sec: float = 10.0
     bfm_thrash_count: int = 4
+    # Tacview Time 을 실제 경과 시간으로 바꾸는 배율.
+    # 호스트는 env step 1회마다 1행을 쓰면서 Time 은 내부 스텝 1개분만 올린다
+    # (log_analysis/metrics.py 설명 참조). 학습 env_config.step_ratio 와 같게 준다.
+    time_scale: float = 1.0
 
 
 def detect_energy_events(time: list[float], own: Track, tgt: Track,
                          lo: int, hi: int, th: Thresholds) -> list[Event]:
     """에너지 역전 / 열세 / 속도 손실. specific energy 근사를 쓴다."""
     events: list[Event] = []
-    own_speed = speed_series(own.time, own.lat, own.lon, own.alt)
+    own_speed = speed_series(own.time, own.lat, own.lon, own.alt, th.time_scale)
     own_se = specific_energy_series(own.alt, own_speed)
 
     tgt_se: list[float] = []
     if len(tgt) >= 2:
-        tgt_speed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt)
+        tgt_speed = speed_series(tgt.time, tgt.lat, tgt.lon, tgt.alt, th.time_scale)
         tgt_se = specific_energy_series(tgt.alt, tgt_speed)
 
     # 에너지 우위 부호 변화 (양 -> 음)
@@ -93,7 +97,7 @@ def detect_altitude_events(time: list[float], own: Track,
                            lo: int, hi: int, th: Thresholds) -> list[Event]:
     """저고도 진입 / 급하강."""
     events: list[Event] = []
-    descent = descent_rate_series(own.time, own.alt)
+    descent = descent_rate_series(own.time, own.alt, th.time_scale)
     low_line = th.min_altitude_m + th.low_altitude_margin_m
 
     entered_low = False

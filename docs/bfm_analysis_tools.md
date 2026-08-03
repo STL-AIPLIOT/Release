@@ -21,6 +21,17 @@
 **Tacview CSV 에 속도 컬럼이 없다.** 속도는 위경도/고도 차분으로 추정한다. 질량 정보가
 없어 절대 에너지 대신 `specific_energy = g*h + 0.5*v^2` 근사를 쓴다. 산출물에도 명시된다.
 
+**Tacview `Time` 컬럼은 실제 경과 시간이 아니다 (2026-08-04 확인).** 호스트는 env step
+1회마다 1행을 쓰는데(`single_agent_env.py:405`), Time 은 내부 스텝 1개분(`1/60`초)만
+올린다(`:996`). 1 env step = `step_ratio` 내부 스텝(`:289`)이므로 **Time 은 실제보다
+`step_ratio`(=6) 배 느리게 흐른다.** 그대로 나누어 구한 속도·강하율은 6배 부풀려진다
+(7000 m 강하가 Time 기준 6.9초 → 969 m/s 로 F-16 에서 불가능한 값).
+
+`speed_series` / `descent_rate_series` 의 `time_scale` 인자로 보정한다.
+기본값 1.0 은 기존 동작 유지, `analyze_loss_patterns.py` 와
+`export_playback_cases.py` 는 `--step-ratio`(기본 6)로 보정한다.
+**각도·거리·WEZ 는 시간과 무관하므로 영향을 받지 않는다.**
+
 ## BFM 모드를 쓰려면 먼저 stdout 을 받아야 한다
 
 BFM 모드는 위 어떤 파일에도 없다. BT(C++)가 `std::cout` 으로만 찍는다.
