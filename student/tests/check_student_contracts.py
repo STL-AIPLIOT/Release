@@ -441,6 +441,7 @@ def test_reward_contract():
         "wez_hold",
         "overclose",
         "energy",
+        "altitude",   # v3에서 추가: 고도 안전 마진 dense 패널티
         "crash",
         "terminal",
     }
