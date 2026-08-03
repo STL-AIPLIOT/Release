@@ -1,0 +1,123 @@
+# STIL SAC MLP baseline — Gate 2 (W2 "SAC MLP 1차 학습")
+#
+# 실행:
+#   python -m ray stop --force
+#   python scripts\run_experiment.py experiments\stil_sac_mlp_v1.yaml --dry-run
+#   python scripts\run_experiment.py experiments\stil_sac_mlp_v1.yaml
+#
+# 판정 기준 (Gate 2):
+#   - reward_mean 추세가 수렴할 것
+#   - crash_rate <= 0.05
+#   두 지표는 artifacts/logs/stil/sac_mlp_v1/training_log.csv 와
+#   artifacts/dashboard/*/metrics.jsonl 에서 읽는다.
+
+name: stil_sac_mlp_v2
+script: train_rllib
+
+output:
+  name: stil
+  tag: sac_mlp_v2
+
+# 1) 시나리오
+# 관측은 student/my_observation.py (stil8, 8차원)로 고정한다.
+# 이 module path는 아래 5곳에 동일하게 적혀 있어야 한다 (Docs/09 §2):
+#   이 YAML / train CLI / metadata.json / run_local_dogfight.py / my_submission.py
+env:
+  observation_mode: custom
+  observation_module: student.my_observation
+  reward_module: student.my_reward
+  # baseline은 고정 표적으로 수렴 자체를 먼저 확인한다.
+  # BT 스파링(Gate 3 비교용)으로 올릴 때 아래 두 줄로 교체하고
+  # runtime.init_bundle 에 이 실험의 bundle을 지정한다.
+  #   target_mode: behavior_tree
+  #   target_behavior_dll: AIP_BASE_target.dll
+  target_mode: fixed
+  target_behavior_dll: AIP_BASE_target.dll
+  max_engage_time: 120.0
+  episode_step_limit: 7200
+
+# 1+) 세부 환경 설정 (train_rllib.py가 env 기본값에 deep merge)
+env_config:
+  # [v2 변경 1] 초기 조건 무작위화.
+  # config.py:45-51 기본값이 enabled:false 라 켜지 않으면 모든 에피소드가
+  # 동일 지점에서 시작한다 (v1 400 iteration 실측 확인).
+  # 100 iteration 대조: reward -206.9 -> -170.4, crash_rate 1.000 -> 0.857
+  ownship_randomization:
+    enabled: true
+    radius: 500.0
+    r_roll: 10.0
+    r_pitch: 5.0
+    r_heading: 30.0
+  step_ratio: 6
+  # WEZ 기준. my_observation.py / my_reward.py의 fallback 상수와 같은 값이며,
+  # 여기 값이 wez_config로 전달되어 우선한다. 500 ft / 3000 ft.
+  wez:
+    angle_deg: 2.0
+    min_range_m: 152.4
+    max_range_m: 914.4
+  # 보상 가중치는 student/my_reward.py 의 MY_REWARD_CONFIG가 정답지다.
+  # 아래 reward 블록은 reward_module을 끄고 기본 보상으로 되돌릴 때만 쓰인다.
+  reward:
+    mode: default
+    step_penalty: -0.005
+    damage_scale: 20.0
+    pursuit_scale: 0.3
+    low_altitude_penalty: 0.1
+    win_reward: 100.0
+    loss_reward: -100.0
+    draw_reward: -10.0
+
+# 2) 알고리즘 + 3) 하이퍼파라미터 + 5) 신경망
+# 계획서 지정값: gamma=0.99, tau=0.005, alpha auto-tune, lr 기본값
+algo:
+  name: sac
+  framework: torch
+  lr: 3.0e-4
+  gamma: 0.99
+  tau: 0.005
+  target_entropy: auto        # [주의] train_rllib.py:677 의 --target-entropy 는 type 지정이 없어 숫자를 주면 문자열로 SAC에 전달되고 torch.tensor("-2.0") 에서 TypeError 로 죽는다. auto 외의 값은 쓸 수 없다.
+  train_batch_size: 256
+  minibatch_size: 256
+  replay_buffer_capacity: 100000
+  mlp:
+    enabled: true
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    head_fcnet_hiddens: []
+    head_fcnet_activation: relu
+
+runtime:
+  iterations: 200
+  num_env_runners: 1
+  num_envs_per_env_runner: 1
+  rollout_fragment_length: auto
+  batch_mode: truncate_episodes
+  checkpoint_frequency: 20
+  save_native_checkpoint: true
+  # 재개:
+  #   restore_checkpoint: artifacts/checkpoints/stil/sac_mlp_v1/checkpoint_000020
+  # 이 baseline을 시드로 BT 스파링을 시작할 때:
+  #   init_bundle: artifacts/models/stil/sac_mlp_v1
+
+# 6) 로그
+dashboard:
+  enabled: true
+  logdir: artifacts/dashboard
+
+# 고정 입력에 대한 actor 출력 추적. 정책이 죽었는지(상수 출력) 조기 확인용.
+policy_probe:
+  enabled: true
+  interval: 10
+  steps: 4
+  print: true
+
+# 학습 중 짧은 평가 교전 -> 패배 패턴 보고서의 1차 자료.
+engagement_log:
+  enabled: true
+  interval: 20
+  steps: 600
+  episodes: 1
+  print: true
+
+notes: "STIL Gate 2 SAC MLP baseline. obs=stil8(custom), reward=my_reward v2, target=fixed."
+

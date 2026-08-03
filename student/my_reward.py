@@ -113,6 +113,19 @@ MY_REWARD_CONFIG = {
     # --- 에너지 (소가중치. 크게 주면 회피 정책으로 붕괴한다) ---
     "energy_weight": 0.02,
     # --- 종료 ---
+    # --- 고도 안전 마진 (v3에서 추가) ---
+    # v2까지 추락에 대한 신호는 crash_penalty 하나뿐이었다. 그건 에피소드가 끝난 뒤
+    # 한 번 주는 값이라, 7000 m에서 300 m까지 내려가는 400 step 내내 정책은
+    # "낮아지고 있다"는 정보를 받지 못했다. 400 iteration 실측에서 92개 에피소드 중
+    # 82개가 추락했고(crash_rate 0.891), 살아남은 10개는 pitch 평균이 -0.17로
+    # 추락 그룹(-0.036)보다 5배 컸다. 즉 기수를 드는 방향이 정답인데 그쪽으로
+    # 밀어주는 dense 신호가 없었다.
+    #
+    # altitude_safe_band_m 아래로 내려가면 매 step 패널티가 들어오고,
+    # min_altitude 에 가까워질수록 제곱으로 커진다.
+    "altitude_weight": 0.4,           # pursuit_weight(0.6)와 같은 자릿수. 크면 교전을 안 한다.
+    "altitude_safe_band_m": 2000.0,   # 이 높이 아래부터 신호가 들어온다
+    "min_altitude_m": 300.0,          # env min_altitude 기본값 (config.py)
     "crash_penalty": -150.0,
     "win_reward": 100.0,
     "loss_reward": -100.0,
@@ -430,12 +443,27 @@ def compute_reward(
     else:
         state._prev_energy_adv_m = math.nan
 
+    # --- 고도 안전 마진 (dense) ---
+    # margin = (alt - min_alt) / band 를 [0, 1]로 자르고, (1 - margin)^2 에 비례해
+    # 패널티를 준다. band 위에서는 정확히 0이라 정상 교전 고도에서는 아무 영향이 없다.
+    # 고도를 못 읽으면 0으로 둔다(패널티를 만들어내지 않는다).
+    altitude = 0.0
+    altitude_w = abs(_finite(cfg.get("altitude_weight", 0.4), 0.4))
+    band_m = _finite(cfg.get("altitude_safe_band_m", 2000.0), 2000.0)
+    min_alt_m = _finite(cfg.get("min_altitude_m", 300.0), 300.0)
+    alt_m = _state_value(ownship_state, StateIndex.ALT, math.nan)
+    if altitude_w > 0.0 and band_m > 0.0 and math.isfinite(alt_m):
+        margin = _clip((alt_m - min_alt_m) / band_m, 0.0, 1.0)
+        shortfall = 1.0 - margin
+        altitude = -altitude_w * shortfall * shortfall
+
     components["pursuit"] = pursuit
     components["position"] = position
     components["wez_entry"] = wez_entry
     components["wez_hold"] = wez_hold
     components["overclose"] = overclose
     components["energy"] = energy
+    components["altitude"] = altitude
 
     # --- 종료 ---
     crash = 0.0
