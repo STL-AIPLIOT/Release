@@ -1,0 +1,3 @@
+group,sample_count,nan_count,min,max,mean,median,stdev,p95,p99,abs_max,out_of_range_count,spike_count,outlier_ge_170,outlier_ge_175,outlier_ge_179,checked_frames,raw_delta_beyond_180,normalized_delta_beyond_180,wrap_corrected_frames,max_abs_normalized_delta,normalized_vs_expected_mismatch
+before,0,0,,,,,,,,,0,0,0,0,0,0,0,0,0,,0
+after,0,0,,,,,,,,,0,0,0,0,0,0,0,0,0,,0

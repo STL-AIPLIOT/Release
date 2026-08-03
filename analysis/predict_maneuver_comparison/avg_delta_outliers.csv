@@ -1,0 +1,1 @@
+group,match_id,run_type,episode,frame,time_sec,avg_delta_deg,raw_delta_deg,normalized_delta_deg,kind,bfm_before,bfm_at,bfm_after,scissors_before,scissors_at,scissors_after,own_ata_deg,target_aa_deg,distance_m,derived_in_wez,wez_reason

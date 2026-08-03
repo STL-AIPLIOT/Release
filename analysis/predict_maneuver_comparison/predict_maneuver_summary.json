@@ -1,0 +1,171 @@
+{
+  "generated_at": "2026-08-04T07:23:20",
+  "units": {
+    "angle": "degree",
+    "distance": "meter",
+    "time": "second"
+  },
+  "source_units_note": "PredictManeuver CSV 의 각도는 원본 그대로 degree 다. 변환하지 않았다.",
+  "thresholds": {
+    "outlier_threshold_deg": 170.0,
+    "outlier_thresholds_deg": [
+      170.0,
+      175.0,
+      179.0
+    ],
+    "spike_threshold_deg": 90.0,
+    "outlier_followup_frames": 20,
+    "min_matches": 20
+  },
+  "wez_config": {
+    "angle_deg": 2.0,
+    "min_range_m": 152.4,
+    "max_range_m": 914.4,
+    "gate": "update_damage 와 동일: min<=d<=max and angle_deg/2 >= |ATA|"
+  },
+  "insufficient_matches": [],
+  "verdict_rules": {
+    "PASS": "after 로그에서 (a) |normalizedDelta| > 180 인 프레임이 0 이고, (b) |avgDelta| >= outlier_threshold 인 프레임이 0 이며, (c) normalizedDelta 가 전부 wrap_angle_deg(rawDelta) 와 일치한다.",
+    "PARTIAL": "wrap 경계 급등(|normalizedDelta| > 180, rawDelta 미보정)은 사라졌으나 |avgDelta| 이상값이 남아 있다. 원인이 wrap 이 아닌 다른 곳에 있다는 뜻이다.",
+    "FAIL": "after 로그에도 보정되지 않은 값이 남아 있다 (|normalizedDelta| > 180 또는 normalizedDelta != wrap(rawDelta)).",
+    "INSUFFICIENT_DATA": "before/after 중 한쪽 이상에 프레임이 없거나, avgDelta/rawDelta/normalizedDelta 컬럼이 없어 비교할 수 없다."
+  },
+  "verdict_reasons": [
+    "after 로그에 프레임이 없다."
+  ],
+  "fairness_checklist": [
+    "seed",
+    "상대 정책 또는 상대 bundle (--target-backend / --target-bt-dll / --target-bundle-dir)",
+    "aircraft 설정 (Release/aircraft, engine)",
+    "scenario (initial_scenario: altitude_m / distance_m / heading)",
+    "episode 제한시간 (--max-engage-time / --episode-step-limit)",
+    "observation 설정 (--observation-mode / --observation-module)",
+    "reward 설정 (reward_module / MY_REWARD_CONFIG)",
+    "PredictManeuver 설정 (historySize=5, TURN_THRESHOLD_DEG=1.5)",
+    "BFM 상태 전환 설정 (Rule.xml, SetBFMMode_* 임계값)",
+    "경기 수 (--min-matches 이상)",
+    "checkpoint / bundle 디렉터리",
+    "코드 commit hash (Release / Behaviortree 각각)"
+  ],
+  "wraparound_verdict": "INSUFFICIENT_DATA",
+  "before": {
+    "logdir": "logs\\predict\\before",
+    "source_count": 0,
+    "sources": [],
+    "frame_count": 0,
+    "episode_count": 0,
+    "episode_derived": false,
+    "missing_columns": [],
+    "avg_delta": {
+      "sample_count": 0,
+      "nan_count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "stdev": null,
+      "p95": null,
+      "p99": null,
+      "abs_max": null,
+      "out_of_range_count": 0,
+      "outlier_counts": {
+        "170": 0,
+        "175": 0,
+        "179": 0
+      },
+      "spike_count": 0
+    },
+    "avg_delta_outlier_count": 0,
+    "wrap_evidence": {
+      "checked_frames": 0,
+      "raw_delta_beyond_180": 0,
+      "normalized_delta_beyond_180": 0,
+      "wrap_corrected_frames": 0,
+      "max_abs_normalized_delta": null,
+      "normalized_vs_expected_mismatch": 0
+    },
+    "scissors": {
+      "match_count": 0,
+      "matches_with_entry": 0,
+      "entry_match_ratio": null,
+      "entry_count": 0,
+      "entries_per_match_mean": null,
+      "entries_per_match_median": null,
+      "total_dwell_sec": null,
+      "dwell_per_match_mean": null,
+      "dwell_per_entry_mean": null,
+      "longest_dwell_sec": null,
+      "reentry_count": 0,
+      "open_segment_count": 0,
+      "entered_from": {},
+      "exited_to": {},
+      "logged_entry_count": null
+    },
+    "scissors_entry_count": 0,
+    "scissors_entry_episode_ratio": null,
+    "scissors_entry_after_outlier": 0
+  },
+  "after": {
+    "logdir": "logs\\predict\\after",
+    "source_count": 0,
+    "sources": [],
+    "frame_count": 0,
+    "episode_count": 0,
+    "episode_derived": false,
+    "missing_columns": [],
+    "avg_delta": {
+      "sample_count": 0,
+      "nan_count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "stdev": null,
+      "p95": null,
+      "p99": null,
+      "abs_max": null,
+      "out_of_range_count": 0,
+      "outlier_counts": {
+        "170": 0,
+        "175": 0,
+        "179": 0
+      },
+      "spike_count": 0
+    },
+    "avg_delta_outlier_count": 0,
+    "wrap_evidence": {
+      "checked_frames": 0,
+      "raw_delta_beyond_180": 0,
+      "normalized_delta_beyond_180": 0,
+      "wrap_corrected_frames": 0,
+      "max_abs_normalized_delta": null,
+      "normalized_vs_expected_mismatch": 0
+    },
+    "scissors": {
+      "match_count": 0,
+      "matches_with_entry": 0,
+      "entry_match_ratio": null,
+      "entry_count": 0,
+      "entries_per_match_mean": null,
+      "entries_per_match_median": null,
+      "total_dwell_sec": null,
+      "dwell_per_match_mean": null,
+      "dwell_per_entry_mean": null,
+      "longest_dwell_sec": null,
+      "reentry_count": 0,
+      "open_segment_count": 0,
+      "entered_from": {},
+      "exited_to": {},
+      "logged_entry_count": null
+    },
+    "scissors_entry_count": 0,
+    "scissors_entry_episode_ratio": null,
+    "scissors_entry_after_outlier": 0
+  },
+  "difference": {
+    "avg_delta_outlier_count": 0,
+    "avg_delta_abs_max": null,
+    "scissors_entry_count": 0,
+    "scissors_entry_episode_ratio_percentage_point": null
+  }
+}

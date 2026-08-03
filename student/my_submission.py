@@ -36,6 +36,7 @@ BUNDLE_DIR 경로와 팀 이름을 설정한 뒤 이 파일을 실행하세요.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -108,6 +109,121 @@ DEBUG_ACTION_REPEAT = False
 # 실행 로직 (수정 불필요)
 # =============================================================================
 
+class ObservationContractError(RuntimeError):
+    """observation 설정이 bundle 과 어긋난다. 조용히 진행하지 않고 즉시 멈춘다."""
+
+
+def _bundle_observation_info(bundle_path: Path) -> dict[str, object]:
+    """bundle metadata.json 에서 observation 관련 값만 뽑는다.
+
+    구 스키마에는 없는 필드가 있으므로, 없으면 None 으로 두고 "MISSING" 으로
+    보고한다. 즉시 틀린 값으로 단정하지 않는다.
+    """
+    meta_path = bundle_path / "metadata.json"
+    if not meta_path.exists():
+        return {"available": False, "reason": f"metadata.json 없음: {meta_path}"}
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"available": False, "reason": f"metadata.json 파싱 실패: {exc}"}
+
+    meta = payload.get("metadata") or {}
+    env_cfg = (payload.get("algorithm_config") or {}).get("env_config") or {}
+    summary = env_cfg.get("observation_summary") or {}
+
+    size = env_cfg.get("observation_size")
+    size_source = "algorithm_config.env_config.observation_size"
+    if size is None and isinstance(summary, dict) and isinstance(summary.get("size"), int):
+        size = summary["size"]
+        size_source = "algorithm_config.env_config.observation_summary.size"
+    if size is None and isinstance(meta.get("observation_size"), int):
+        size = meta["observation_size"]
+        size_source = "metadata.observation_size"
+
+    return {
+        "available": True,
+        "path": str(meta_path),
+        "mode": meta.get("obs_mode", env_cfg.get("observation_mode")),
+        "module": meta.get("observation_module", env_cfg.get("observation_module")),
+        "size": size,
+        "size_source": size_source if size is not None else None,
+        "env_config_size": env_cfg.get("observation_size"),
+    }
+
+
+def verify_observation_contract(bundle_path: Path, observation_hook: dict | None) -> None:
+    """실행 직전에 observation 계약을 검증하고 최종 설정을 출력한다.
+
+    확인 항목
+      - bundle metadata 의 observation_module 과 이 파일의 OBSERVATION_MODULE
+      - bundle metadata 의 observation_size 와 로드된 훅의 size
+      - RLLibInferenceEnv 가 읽는 env_config.observation_size 의 존재
+
+    어긋나면 ObservationContractError 로 즉시 멈춘다. padding / truncation /
+    조용한 fallback 을 하지 않는다 — 그러면 정책이 돌긴 하면서 성능만 무너진다.
+    """
+    info = _bundle_observation_info(bundle_path)
+
+    declared_module = OBSERVATION_MODULE.strip()
+    hook_mode = observation_hook["mode"] if observation_hook else None
+    hook_size = observation_hook["size"] if observation_hook else None
+    effective_mode = hook_mode or OBSERVATION_MODE
+
+    source = "metadata" if info.get("available") else "my_submission 상수"
+    print("[ObservationConfig]")
+    print(f"mode={effective_mode}")
+    print(f"module={declared_module or '(없음 — 기본 관측)'}")
+    print(f"size={hook_size if hook_size is not None else 'UNKNOWN'}")
+    print(f"source={source}")
+    print(f"checkpoint={bundle_path}")
+
+    if not info.get("available"):
+        # metadata 를 못 읽는 것 자체는 계약 위반이 아니다(구 bundle 일 수 있다).
+        # 다만 검증을 못 했다는 사실은 반드시 보인다.
+        print(f"[ObservationConfig] 경고: bundle 검증을 하지 못했다 — {info.get('reason')}")
+        return
+
+    meta_module = str(info.get("module") or "").strip()
+    meta_size = info.get("size")
+
+    problems: list[str] = []
+    if meta_module != declared_module:
+        problems.append(
+            f"- bundle metadata observation_module: {meta_module or '(없음)'}\n"
+            f"- my_submission OBSERVATION_MODULE : {declared_module or '(없음)'}")
+    if meta_size is not None and hook_size is not None and int(meta_size) != int(hook_size):
+        problems.append(
+            f"- bundle metadata observation_size : {meta_size}\n"
+            f"- loaded module observation_size   : {hook_size}")
+
+    if problems:
+        raise ObservationContractError(
+            "Observation configuration mismatch:\n"
+            + "\n".join(problems)
+            + f"\n\nbundle: {info.get('path')}\n"
+            "This checkpoint cannot be reused with the selected observation module.\n"
+            "Use the matching module or train a new checkpoint with a new output tag."
+        )
+
+    if info.get("env_config_size") is None:
+        # RLLibInferenceEnv 는 env_config.observation_size 만 읽는다. 이 키가 없으면
+        # observation_size(mode) 가 12 를 돌려주어 모델 로드 자체가 실패한다.
+        raise ObservationContractError(
+            "Observation configuration mismatch:\n"
+            f"- bundle metadata observation_size: {meta_size} "
+            f"({info.get('size_source')})\n"
+            "- algorithm_config.env_config.observation_size: MISSING\n\n"
+            f"bundle: {info.get('path')}\n"
+            "RLLibInferenceEnv reads env_config.observation_size only; without it the\n"
+            "model is built with observation_size(mode)=12 and weight loading fails.\n"
+            "Fix the bundle first (it only fills in a value already present in the file):\n"
+            f"  python student\\tools\\fix_bundle_obs_size.py {bundle_path} --apply"
+        )
+
+    print(f"[ObservationConfig] bundle 검증 통과 (size={meta_size}, "
+          f"출처 {info.get('size_source')})")
+
+
 def build_action_provider():
     if MODE == "bt":
         print(f"[{TEAM_NAME}] BT 백엔드 사용: {BT_DLL}")
@@ -150,12 +266,16 @@ def main():
         print(f"BT DLL/XML: {BT_DLL} / {BT_RULE_XML}")
 
     with activate_rule_xml(BT_RULE_XML, ROOT):
-        action_provider = build_action_provider()
         observation_hook = (
             load_observation_hook(OBSERVATION_MODULE)
             if OBSERVATION_MODULE
             else None
         )
+        # 모델을 만들기 전에 계약을 먼저 확인한다. 어긋나면 여기서 멈춘다.
+        if MODE in {"rl", "hybrid"}:
+            verify_observation_contract(ROOT / BUNDLE_DIR, observation_hook)
+
+        action_provider = build_action_provider()
         command_policy = ProviderCommandPolicy(
             action_provider=action_provider,
             observation_mode=observation_hook["mode"] if observation_hook else OBSERVATION_MODE,

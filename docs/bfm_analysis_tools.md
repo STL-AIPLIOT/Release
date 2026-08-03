@@ -84,7 +84,22 @@ raw 는 회색, 이동평균은 노랑이다.
 - `--logdir` 아래에 `training_log.csv` 가 여러 개면 실험별로 나누어 함께 보여준다.
 - 표준 라이브러리만 쓴다. 새 의존성이 없다.
 - 벤더 대시보드(`DogFightEnv/tools/dogfight_dashboard`)가 있으면 그쪽을 그대로 호출한다.
-  현재 드롭에는 그 디렉터리가 없어 내장 서버로 동작한다.
+  현재 드롭에는 그 디렉터리가 없어 내장 서버로 동작한다. 같은 이유로 벤더의
+  `tools/web_log_viewer.py` 와 `tools/training_dashboard/server.py` 는 `ImportError` 로
+  실행되지 않는다 — 복기(Replay)는 아래 `--playback-dir` 로 한다.
+
+**Replay 탭 (DogFight Log Playback)**
+
+```powershell
+python tools/dashboard.py --playback-dir analysis/playback_cases --port 7860
+python tools/dashboard.py --logdir artifacts/logs/stil --playback-dir analysis/playback_cases --port 7860
+```
+
+`export_playback_cases.py` 가 만든 케이스를 재생한다. 궤적(위에서 본 평면 + 고도),
+Own ATA / Target AA / 거리 / 속도 HUD, WEZ badge, BFM·SCISSORS badge, ATA/AA 시간 그래프,
+이벤트 타임라인 marker, 재생·일시정지·배속(0.25~8×)·시간 이동, hover 상세,
+`playback.json` / `trajectory.csv` 내려받기를 제공한다.
+`case_id` 는 manifest 에 있는 것만 열린다(경로 탈출 요청은 404).
 
 ### 3. 패배 직전 패턴 — `analyze_loss_patterns.py`
 
@@ -169,10 +184,54 @@ python tools/analyze_timeout_habfm.py compare --before <전_경로> --after <후
 BFM 로그가 없으면 계산 가능한 지표(경기 수, 타임아웃 비율, 승률, 추락률, 평균 보상,
 종료 원인 분포)만 내고, 계산 불가 지표를 이름과 사유와 함께 따로 보고한다.
 
+### 7. PredictManeuver 전/후 비교 — `analyze_predict_maneuver.py`
+
+```powershell
+python tools/analyze_predict_maneuver.py compare `
+    --before logs/predict/before --after logs/predict/after `
+    --outlier-threshold-deg 170 --spike-threshold-deg 90 --min-matches 20 `
+    --output analysis/predict_maneuver_comparison
+```
+
+입력은 BT 의 `PredictManeuverCsvLogger` 가 남긴 CSV 다(환경변수 `PM_CSV_LOG` 를 설정한
+실행에서만 생긴다). `avgDelta` 분포와 ±180 부근 이상값, wrap 보정 직접 증거,
+SCISSORS 진입 빈도(**transition 기준**)를 비교하고 `wraparound_verdict` 를 낸다.
+로그가 없으면 `INSUFFICIENT_DATA` 로 판정하고 종료 코드 2 를 돌려준다 — 값을 지어내지 않는다.
+
+자세한 절차와 판정 기준: `docs/predict_maneuver_and_observation_validation.md`.
+
+### 8. 대표 경기 복기 데이터 — `export_playback_cases.py`
+
+```powershell
+python tools/export_playback_cases.py --logdir artifacts/logs `
+    --output analysis/playback_cases --handoff analysis/rl_trajectory_handoff
+```
+
+대표 패배 경기를 유형별로 고르고, Tacview 궤적에서 ATA/AA/WEZ/속도/에너지를 다시 계산해
+뷰어가 읽는 `playback.json` 을 만든다. 파생값은 전부 `derived_` 접두사가 붙고
+`field_origin` 에 출처가 적힌다. 원본 로그는 복사하지 않고 경로만 기록한다.
+
+### 9. observation 설정 검사 — `check_observation_consistency.py`
+
+```powershell
+python tools/check_observation_consistency.py `
+    --config experiments/<exp>.yaml --metadata <bundle>/metadata.json `
+    --train-script train_rllib.py --local-runner run_local_dogfight.py `
+    --submission student/my_submission.py `
+    --observation-module-file student/my_observation.py `
+    --bundle-weights <bundle>/policy_weights.pkl.gz
+```
+
+YAML / `train_rllib.py` / `metadata.json` / `run_local_dogfight.py` / `my_submission.py` 와
+observation 모듈·bundle 가중치를 비교한다. Python 파일은 AST 로 읽는다.
+종료 코드 0/1/2/3 을 돌려주므로 CI 나 교전 preflight 에 쓸 수 있다.
+
 ## 테스트
 
 ```powershell
-python tests/tools/test_log_analysis.py
+python tests/tools/test_log_analysis.py               # 46건
+python tests/tools/test_predict_maneuver.py           # 93건
+python tests/tools/test_observation_consistency.py    # 61건
 ```
 
 외부 프레임워크 없이 실패 개수를 센다. 실제 로그를 fixture 로 복사하지 않고 임시
