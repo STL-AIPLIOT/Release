@@ -126,14 +126,34 @@ predictedTurn,bfmMode,scissorsEntered,distance_m,ownAta_deg,targetAa_deg,angleOf
 - WEZ 컬럼은 없다. WEZ 판정은 Python 환경(`update_damage`)이 하며 BT 블랙보드에 없다.
   분석 도구가 `distance_m` / `ownAta_deg` 로 파생시킨다.
 
-### 수정 전 로그
+### 왜 옛 커밋 체크아웃으로는 안 되는가
 
-`Behaviortree` 를 wrap 보정이 없던 시점으로 체크아웃해 DLL 을 만든다.
+wrap 보정(`normalizeAngleDelta`)과 CSV 로거는 **같은 커밋 `0623e1b predict로그 1차`** 에서
+함께 들어왔다. 그 직전 커밋 `e11bf5f` 은 보정이 없는 대신
+
+```cpp
+sumDelta += prevHeadings[i] - prevHeadings[i - 1];   // 보정 없는 단순 뺄셈
+```
+
+로거도 없다. 즉 **옛 커밋을 체크아웃하면 'before' 로그를 만들 자체가 없다.**
+
+그래서 **보정만 끄는 컴파일 플래그** `PM_DISABLE_WRAP_FIX` 를 둔다
+([AngleUtil.h](Behaviortree/BT_Content/AngleUtil.h)). 이 플래그로 빌드하면 위
+`e11bf5f` 와 같은 계산을 하면서 CSV 로깅은 그대로 유지된다.
+두 DLL 의 차이가 **매크로 하나**뿐이므로 공정한 A/B 가 된다.
+
+검증됨: 플래그를 켜고 C++ 테스트를 돌리면 `+180 경계를 넘는 +2도/프레임 좌선회`가
+`RIGHT` 로 뒤집혀 3건이 실패한다. 끄면 24건 전부 통과한다.
+
+> 이 플래그를 켠 DLL 을 **제출하거나 실제 교전에 쓰면 안 된다.** 켜면 컴파일 시
+> 경고가 찍히고, 빌드 로그 파일명에 `_nowrapfix` 가 붙는다.
+
+### 수정 전(before) 로그
 
 ```powershell
 cd <STIL_TOPGUN>\Behaviortree
-git stash                       # 또는 해당 커밋 체크아웃
-.\tools\build_bt.ps1 -HostRoot C:\AIP_LIB\AIP_DCS -ReleaseDir C:\AIP_LIB\DogFightEnv\Release -Deploy
+.\tools\build_bt.ps1 -HostRoot C:\AIP_LIB\AIP_DCS `
+    -ReleaseDir C:\AIP_LIB\DogFightEnv\Release -Deploy -DisableWrapFix
 
 cd C:\AIP_LIB\DogFightEnv\Release
 $env:PM_CSV_RUNTYPE = "before"
@@ -145,18 +165,22 @@ python run_local_dogfight.py --ownship-backend rl `
     --save-log
 ```
 
-### 수정 후 로그
+### 수정 후(after) 로그
 
 ```powershell
 cd <STIL_TOPGUN>\Behaviortree
-git stash pop
-.\tools\build_bt.ps1 -HostRoot C:\AIP_LIB\AIP_DCS -ReleaseDir C:\AIP_LIB\DogFightEnv\Release -Deploy
+.\tools\build_bt.ps1 -HostRoot C:\AIP_LIB\AIP_DCS `
+    -ReleaseDir C:\AIP_LIB\DogFightEnv\Release -Deploy    # -DisableWrapFix 없이
 
 cd C:\AIP_LIB\DogFightEnv\Release
 $env:PM_CSV_RUNTYPE = "after"
 $env:PM_CSV_LOG     = "logs/predict/after/run01.csv"
 python run_local_dogfight.py ...    # 나머지 인자를 한 글자도 바꾸지 말 것
 ```
+
+`-DisableWrapFix` 는 매크로가 바뀌면 증분 빌드가 이를 감지하지 못하므로
+**항상 Rebuild** 한다. 두 번째 빌드(after)도 반드시 다시 배치(`-Deploy`)해야
+`.obj` 가 섞이지 않는다.
 
 ### 필요한 경기 수
 

@@ -48,7 +48,13 @@ ENV_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_TOOLS = ENV_ROOT.parent / "tools"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from log_analysis import DASHBOARD_METRICS, find_training_logs, iter_training_log, warn  # noqa: E402
+from log_analysis import (  # noqa: E402
+    DASHBOARD_COMBOS,
+    DASHBOARD_METRICS,
+    find_training_logs,
+    iter_training_log,
+    warn,
+)
 
 
 def _has_option(name: str) -> bool:
@@ -135,13 +141,35 @@ def read_run(path: Path, metrics: tuple[str, ...], window: int) -> dict[str, obj
 def collect(logdir: Path, metrics: tuple[str, ...], window: int) -> dict[str, object]:
     """logdir 아래 모든 실험을 읽는다."""
     logs = find_training_logs(logdir)
+    hint = ""
     if not logs:
+        # 조용히 빈 화면을 띄우지 않는다. 어디에 있는지 찾아서 알려 준다.
+        hint = suggest_logdir(logdir)
         warn(f"training_log.csv 를 찾지 못했다: {logdir}")
+        if hint:
+            warn(hint)
     return {
         "logdir": str(logdir),
         "window": window,
+        "hint": hint,
+        "combos": [list(c) for c in DASHBOARD_COMBOS],
         "runs": [read_run(p, metrics, window) for p in logs],
     }
+
+
+def suggest_logdir(missing: Path) -> str:
+    """training_log.csv 가 어디에 있는지 찾아 안내 문구를 만든다.
+
+    artifacts/dashboard 에는 metrics.jsonl 만 있고 training_log.csv 는
+    artifacts/logs/<name>/<tag>/ 에 있다. 이 둘을 헷갈리기 쉬워 안내를 붙인다.
+    """
+    for base in (ENV_ROOT / "artifacts" / "logs", Path("artifacts") / "logs"):
+        found = sorted(base.rglob("training_log.csv")) if base.exists() else []
+        if found:
+            dirs = sorted({str(f.parent.parent) for f in found})
+            return ("training_log.csv 는 artifacts/logs/<name>/<tag>/ 에 있다. "
+                    f"예: --logdir {dirs[0]}")
+    return ""
 
 
 # --------------------------------------------------------------------------- 복기
@@ -207,6 +235,9 @@ h1{font-size:15px;margin:0;letter-spacing:.02em}
 .v{font:20px ui-monospace,monospace;font-variant-numeric:tabular-nums;margin:4px 0}
 .sub{font:11px ui-monospace,monospace;color:var(--dim)}
 .na{color:#c9756c}
+.combo{grid-column:1/-1}
+.combo canvas{height:150px}
+.sw{display:inline-block;width:9px;height:9px;margin-right:4px;vertical-align:middle}
 canvas{width:100%;height:90px;display:block;margin-top:8px}
 nav{display:flex;gap:2px;margin-left:auto}
 nav button{background:var(--panel);color:var(--dim);border:1px solid var(--line);
@@ -243,6 +274,7 @@ a.dl{color:var(--acc);font:11px ui-monospace,monospace;margin-right:12px}
 </style></head><body>
 <header><h1>DogFightEnv 대시보드</h1>
 <span class="meta" id="meta">불러오는 중…</span>
+<span class="meta na" id="hint"></span>
 <nav><button id="tabTraining" class="on">Training</button><button id="tabReplay">Replay</button></nav>
 </header>
 <div id="root"></div>
@@ -283,8 +315,58 @@ async function tick(){
         setTimeout(()=>draw(cv,s.raw,s.smooth),0); }
       g.appendChild(card);
     }
+    // 보상 성분 겹침 패널 (pursuit vs position + 차이선)
+    for(const [a,b,label] of (d.combos||[])) addComboCard(g, run, a, b, label);
     sec.appendChild(g); root.appendChild(sec);
   }
+  const hint=document.getElementById("hint");
+  if(hint) hint.textContent = d.runs.length ? "" : (d.hint||"");
+}
+
+// pursuit 과 position 을 한 축에 겹쳐 그리고, 둘 다 있으면 차이선을 덧그린다.
+// 차이선이 0 에 붙으면 두 성분이 서로 상쇄되고 있다는 뜻이다.
+function addComboCard(grid, run, keyA, keyB, label){
+  const A=run.metrics[keyA], B=run.metrics[keyB];
+  const card=document.createElement("div"); card.className="card combo";
+  const na=[];
+  if(!A||!A.available) na.push(keyA);
+  if(!B||!B.available) na.push(keyB);
+  card.innerHTML=`<div class="k">${label}</div>
+    <div class="sub"><span class="sw" style="background:#e0a942"></span>${keyA}
+      <span class="sw" style="background:#5b8dd6;margin-left:10px"></span>${keyB}
+      <span class="sw" style="background:#6fa873;margin-left:10px"></span>차이(${keyA} − ${keyB})</div>
+    ${na.length?`<div class="sub na">로그에 없는 컬럼: ${na.join(", ")}
+      — train_rllib.py 의 _CSV_FIELDS 가 하드코딩이라 해당 성분은 CSV 로 나오지 않는다.
+      있는 계열만 그린다.</div>`:""}`;
+  const cv=document.createElement("canvas"); card.appendChild(cv);
+  grid.appendChild(card);
+  setTimeout(()=>drawCombo(cv, A, B),0);
+}
+
+function drawCombo(cv, A, B){
+  const dpr=window.devicePixelRatio||1, w=cv.clientWidth, h=150;
+  cv.width=w*dpr; cv.height=h*dpr; const c=cv.getContext("2d");
+  c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,w,h);
+  const sa=(A&&A.available)?A.smooth:null, sb=(B&&B.available)?B.smooth:null;
+  let diff=null;
+  if(sa&&sb){ diff=sa.map((v,i)=>(v===null||sb[i]===null)?null:v-sb[i]); }
+  const all=[...(sa||[]),...(sb||[]),...(diff||[])].filter(v=>v!==null);
+  if(all.length<2){
+    c.fillStyle="#98a0a8"; c.font="12px ui-monospace,monospace";
+    c.fillText("표시할 값이 없다", 8, 20); return;
+  }
+  const lo=Math.min(...all,0), hi=Math.max(...all,0), sp=(hi-lo)||1;
+  const px=(i,n)=>n<2?0:i/(n-1)*(w-2)+1, py=v=>h-6-((v-lo)/sp)*(h-14);
+  // 0 기준선: 차이선이 여기 붙으면 상쇄 구간이다.
+  c.strokeStyle="#3a4048"; c.setLineDash([3,3]);
+  c.beginPath(); c.moveTo(1,py(0)); c.lineTo(w-1,py(0)); c.stroke(); c.setLineDash([]);
+  const line=(arr,col,wd)=>{ if(!arr) return;
+    c.beginPath(); c.strokeStyle=col; c.lineWidth=wd; let st=false;
+    arr.forEach((v,i)=>{ if(v===null){st=false;return;}
+      const x=px(i,arr.length), y=py(v);
+      if(!st){c.moveTo(x,y);st=true;} else c.lineTo(x,y);});
+    c.stroke(); c.lineWidth=1; };
+  line(sa,"#e0a942",1.6); line(sb,"#5b8dd6",1.6); line(diff,"#6fa873",1.2);
 }
 
 // ---------------------------------------------------------------- Replay 탭
@@ -683,7 +765,13 @@ def make_handler(logdir: Path | None, metrics: tuple[str, ...], window: int,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="학습 지표 + 경기 복기 대시보드")
-    ap.add_argument("--logdir", type=Path, help="training_log.csv 가 있는 디렉터리")
+    # --training-logdir 은 벤더 래퍼(tools/training_dashboard/server.py)의 이름이다.
+    # 예전 문서의 명령을 그대로 붙여넣어도 조용히 무시되지 않도록 별칭으로 받는다.
+    # 벤더 쪽은 artifacts/dashboard(metrics.jsonl)를 가리켰지만 내장 서버는
+    # training_log.csv 를 읽는다. 못 찾으면 collect() 가 올바른 경로를 안내한다.
+    ap.add_argument("--logdir", "--training-logdir", dest="logdir", type=Path,
+                    help="training_log.csv 가 있는 디렉터리 "
+                         "(예: artifacts/logs/stil)")
     ap.add_argument("--playback-dir", type=Path,
                     help="export_playback_cases.py 가 만든 디렉터리 (Replay 탭)")
     ap.add_argument("--port", type=int, default=7860)

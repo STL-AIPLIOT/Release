@@ -44,7 +44,27 @@ REPLAY_INDEX_KEYS = (
 # --- training_log.csv 에서 자주 쓰는 지표 ------------------------------------
 DASHBOARD_METRICS = (
     "reward_mean", "crash_rate", "ep_min_distance", "ep_wez_steps", "win_rate",
+    # 보상 성분 균형 확인용. train_rllib.py 의 _CSV_FIELDS 에 실제로 있는 것은
+    # pursuit 뿐이고 position 은 없다(아래 REWARD_COMPONENT_COLUMNS 주석 참조).
+    # 없는 컬럼은 대시보드가 카드 하나만 N/A 로 표시하고 나머지는 정상 동작한다.
+    "ep_reward_pursuit", "ep_reward_position",
 )
+
+# 보상 성분 겹침 패널. (좌측 계열, 우측 계열, 라벨)
+# 두 계열이 모두 있을 때만 차이선(좌-우)을 그린다.
+DASHBOARD_COMBOS = (
+    ("ep_reward_pursuit", "ep_reward_position", "pursuit vs position"),
+)
+
+# train_rllib.py:1108-1125 의 _CSV_FIELDS 는 하드코딩된 49개 컬럼이고,
+# 보상 성분은 pursuit / damage / safety / survival 네 개만 담는다.
+# 반면 callbacks.py:46-48 은 reward 훅이 돌려준 **모든** 키를 ep_reward_<key> 로
+# RLlib 지표에 넣는다. 따라서 student/my_reward.py 가 만드는
+#   step, position, wez_entry, wez_hold, overclose, energy, altitude, crash, terminal
+# 은 지표에는 있지만 training_log.csv 로는 나오지 않는다(2026-08-04 실측).
+# 반대로 damage / safety / survival 은 훅이 만들지 않아 항상 'n/a' 로 찍힌다.
+REWARD_COMPONENT_COLUMNS = ("ep_reward_pursuit", "ep_reward_damage",
+                            "ep_reward_safety", "ep_reward_survival")
 
 BFM_MODES = ("OBFM", "DBFM", "HABFM", "SCISSORS", "UNKNOWN")
 
