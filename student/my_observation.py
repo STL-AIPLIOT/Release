@@ -63,8 +63,8 @@ for _path in (ROOT, SRC):
 from dogfight.sim.state_schema import StateIndex
 
 
-OBSERVATION_MODE = "stil8"
-OBSERVATION_SIZE = 8
+OBSERVATION_MODE = "stil11"
+OBSERVATION_SIZE = 11
 OBSERVATION_LOW = -1.0
 OBSERVATION_HIGH = 1.0
 
@@ -112,6 +112,22 @@ ENERGY_SPAN_M = 3000.0
 # 접근률 정규화 폭 [m/s]. 정면 교차에서 양쪽 300 m/s면 600 m/s까지 나오지만,
 # 유의미한 구간을 넓게 쓰려고 400에서 포화시킨다.
 CLOSURE_MAX_MS = 400.0
+
+# 자세 정규화 (2026-08-05 추가, stil8 -> stil11).
+#
+# 행동은 [roll, pitch, rudder, throttle] 인데 stil8 관측에는 자세가 하나도 없었다.
+# 정책이 roll/pitch 를 명령하면서 자기 roll/pitch 를 보지 못했고, MLP 라(use_lstm: false)
+# 이전 프레임으로 적분할 수도 없었다. 그래서 고도·보상·상대를 무엇으로 바꾸든
+# 추락률이 1.00 이었다 (7000 m 400 iter, 762 m 200 iter 모두).
+# 벤더 기본 관측 tactical16 은 roll/pitch/yaw 를 명시적으로 담는다
+# (`src/dogfight/envs/observation.py:151`).
+#
+# yaw 는 넣지 않는다. 절대 방위 자체는 교전에 쓸모가 없고, 적과의 상대 방위는
+# ATA/AA 에 이미 들어 있다.
+ROLL_MAX_DEG = 180.0
+PITCH_MAX_DEG = 90.0
+# 상승률 정규화 폭 [m/s]. 실측 강하가 1,449 m / 5초 = 290 m/s 였으므로 그 근처에서 포화시킨다.
+CLIMB_RATE_MAX_MS = 300.0
 
 G = 9.80665
 
@@ -395,6 +411,23 @@ def build_observation(ownship_state, target_state, geo_info, wez_config=None):
     )
     obs[7] = 1.0 if in_wez else -1.0
 
+    # --- 8, 9, 10: 자기 자세와 상승률 ---
+    # roll 은 ±180 에서 감싸므로 -180 과 +180(둘 다 배면)이 부호 반대로 인코딩된다.
+    # 이 불연속을 감수하는 이유: 회복 정밀도가 필요한 구간은 wings-level(roll≈0) 부근이고
+    # 거기서는 인코딩이 매끄럽다. 배면에서는 어느 쪽으로 굴려도 정답이라 모호해도 무해하다.
+    # 없애려면 sin/cos 두 개로 쪼개야 하는데 차원이 늘어 이번에는 택하지 않았다.
+    obs[8] = _symmetric_norm(_state_value(ownship_state, StateIndex.ROLL, math.nan),
+                             ROLL_MAX_DEG)
+    obs[9] = _symmetric_norm(_state_value(ownship_state, StateIndex.PITCH, math.nan),
+                             PITCH_MAX_DEG)
+
+    # 상승률. NED 의 vd 는 아래가 양수이므로 부호를 뒤집어 "양수 = 상승" 으로 맞춘다.
+    # obs[0](고도)과 방향이 같아야 정책이 두 신호를 일관되게 읽는다.
+    # 삼각함수를 다시 쓰지 않고 기존 _velocity_ned() 를 재사용한다.
+    _, _, own_vd = _velocity_ned(ownship_state)
+    obs[10] = (_symmetric_norm(-own_vd, CLIMB_RATE_MAX_MS)
+               if math.isfinite(own_vd) else 0.0)
+
     # 마지막 방어선: 위 경로 중 하나라도 NaN을 흘리면 여기서 잡는다.
     return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0).astype(np.float32)
 
@@ -412,6 +445,9 @@ def describe_observation():
             "energy_advantage_norm",
             "closure_rate_norm",
             "in_wez_flag",
+            "own_roll_norm",
+            "own_pitch_norm",
+            "own_climb_rate_norm",
         ],
         "description": (
             "STIL Gate 2 observation: altitude, speed, ATA, AA, distance, "

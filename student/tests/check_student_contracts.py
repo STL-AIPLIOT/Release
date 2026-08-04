@@ -643,6 +643,70 @@ def test_reward_angle_range_gate():
           "잘못된 설정에서도 full_range 이내는 전액 (하드 컷오프로 축퇴)")
 
 
+def test_observation_attitude():
+    """자세 특징 (2026-08-05, stil8 -> stil11).
+
+    왜 넣었나
+    ---------
+    행동은 [roll, pitch, rudder, throttle] 인데 stil8 관측에는 자세가 없었다.
+    정책이 자기 roll/pitch 를 보지 못한 채 그것을 명령했고, MLP 라 이전 프레임으로
+    적분할 수도 없었다. 고도(7000 m / 762 m)·보상(게이트 유무)·상대(fixed / BT)를
+    무엇으로 바꾸든 추락률이 1.00 이었던 이유다.
+
+    여기서 재는 것은 "값이 범위 안인가" 가 아니라 **실제로 자세에 반응하는가** 다.
+    그건 기존 검사(shape/finite/범위)로는 전혀 잡히지 않는다 — stil11 로 늘린 직후
+    기존 230건이 그대로 통과했다.
+    """
+    section("2-B. 자기 자세 관측 (stil11)")
+
+    for name in ("own_roll_norm", "own_pitch_norm", "own_climb_rate_norm"):
+        check(name in F, f"feature 목록에 {name}")
+
+    i_roll = F.index("own_roll_norm")
+    i_pitch = F.index("own_pitch_norm")
+    i_climb = F.index("own_climb_rate_norm")
+
+    def ob(**kw):
+        return obs_mod.build_observation(make_state(**kw), make_state(), GeoStub(), WEZ)
+
+    # --- roll: 부호와 단조성 ---
+    check(abs(float(ob(roll=0.0)[i_roll])) < 1e-6, "wings-level -> roll 특징 0")
+    check(float(ob(roll=45.0)[i_roll]) > 0.0, "우로 뱅크 -> roll > 0")
+    check(float(ob(roll=-45.0)[i_roll]) < 0.0, "좌로 뱅크 -> roll < 0")
+    ladder = [float(ob(roll=r)[i_roll]) for r in (-180, -90, -30, 0, 30, 90, 180)]
+    check(all(b > a for a, b in zip(ladder, ladder[1:])),
+          f"roll 이 단조 증가 {[round(v, 3) for v in ladder]}")
+    check(abs(float(ob(roll=180.0)[i_roll]) - 1.0) < 1e-6
+          and abs(float(ob(roll=-180.0)[i_roll]) + 1.0) < 1e-6,
+          "roll ±180(배면)이 각각 ±1 로 포화 — 감싸는 지점이며 의도된 불연속")
+
+    # --- pitch: 기수 상하 ---
+    check(abs(float(ob(pitch=0.0)[i_pitch])) < 1e-6, "수평 -> pitch 특징 0")
+    check(float(ob(pitch=30.0)[i_pitch]) > 0.0, "기수 상승 -> pitch > 0")
+    check(float(ob(pitch=-30.0)[i_pitch]) < 0.0, "기수 하강 -> pitch < 0")
+    check(abs(float(ob(pitch=90.0)[i_pitch]) - 1.0) < 1e-6, "pitch +90 에서 +1 포화")
+
+    # --- climb rate: 부호 규약이 고도와 같은 방향인가 ---
+    # 이게 뒤집히면 정책이 "내려가는 중" 을 "올라가는 중" 으로 읽는다. 가장 위험한 실수다.
+    # body w(아래 양수)만 있고 자세가 수평이면 vd = +w 이므로 상승률은 -w 다.
+    diving = float(ob(pitch=0.0, u=0.0, v=0.0, w=100.0)[i_climb])
+    climbing = float(ob(pitch=0.0, u=0.0, v=0.0, w=-100.0)[i_climb])
+    check(diving < 0.0, f"강하 중 -> climb_rate < 0 ({diving:+.3f})")
+    check(climbing > 0.0, f"상승 중 -> climb_rate > 0 ({climbing:+.3f})")
+    check(abs(diving + climbing) < 1e-6, "같은 크기의 상승/강하가 대칭")
+
+    # 기수를 들고 전진하면 상승이어야 한다 (body u 가 pitch 로 회전된다).
+    nose_up = float(ob(pitch=30.0, u=200.0, v=0.0, w=0.0)[i_climb])
+    check(nose_up > 0.0, f"기수 30도 + 전진 200 m/s -> climb_rate > 0 ({nose_up:+.3f})")
+
+    # --- 무상태성과 NaN (defect 3 계약) ---
+    a = ob(roll=20.0, pitch=-10.0, w=50.0)
+    b = ob(roll=20.0, pitch=-10.0, w=50.0)
+    check(bool(np.array_equal(a, b)), "같은 입력 -> 같은 자세 특징 (무상태)")
+    nan_obs = ob(roll=math.nan, pitch=math.nan, u=math.nan, v=math.nan, w=math.nan)
+    check(bool(np.all(np.isfinite(nan_obs))), "자세가 NaN 이어도 전 특징 finite")
+
+
 def test_reward_config_defaults_match():
     """`MY_REWARD_CONFIG` 와 `compute_reward` 인라인 기본값이 같은지 검사한다.
 
@@ -1085,6 +1149,7 @@ def main() -> int:
 
     test_observation_contract()
     test_observation_nan_guards()
+    test_observation_attitude()
     test_observation_stateless()
     test_observation_closure()
     test_observation_semantics()
