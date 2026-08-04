@@ -46,10 +46,18 @@ from .normalization import (
     normalize_end_condition,
     normalize_outcome,
 )
-from .schemas import BFM_MODES, DASHBOARD_METRICS, Episode, Track
+from .schemas import (
+    BFM_MODES,
+    DASHBOARD_COMBOS,
+    DASHBOARD_METRICS,
+    REWARD_COMPONENT_COLUMNS,
+    Episode,
+    Track,
+)
 
 __all__ = [
-    "BFM_MODES", "DASHBOARD_METRICS", "END_CONDITION_ALIASES", "END_CONDITION_TYPES",
+    "BFM_MODES", "DASHBOARD_COMBOS", "DASHBOARD_METRICS",
+    "REWARD_COMPONENT_COLUMNS", "END_CONDITION_ALIASES", "END_CONDITION_TYPES",
     "Episode", "Track",
     "circular_mean_deg", "descent_rate_series", "find_replay_indexes",
     "find_summaries", "find_training_logs", "iter_training_log", "load_episodes",
