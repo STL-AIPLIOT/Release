@@ -76,8 +76,30 @@ IDX_VEL_W = 8   # body z 속도 [m/s]
 
 
 # --- 정규화 범위 -------------------------------------------------------------
-# 교전 고도는 initial_scenario.altitude_m 기본값 7000 m, 최저고도 가드 300 m.
-ALT_MAX_M = 15000.0
+# 고도 인코딩 (2026-08-05 변경: 선형 -> sqrt)
+#
+# 종전: _norm(alt, 0, 15000) 선형. 대회 초기 배치(약 610~914 m)와 추락선(300 m)이
+# 전체 범위 2.0 중 **0.062 (3%)** 밖에 차지하지 못했다. 정책이 고도 변화를 사실상
+# 보지 못했고, 실측에서 30/30 판이 마지막 5초에 1,449 m 를 잃고(≈290 m/s 수직)
+# 추락했다 (analysis/bt30_after/판정_20260805.md §3).
+#
+# 변경: 추락선을 원점으로 잡고 제곱근으로 압축한다.
+#     f(alt) = 2 * sqrt(clip((alt - ALT_FLOOR_M) / (ALT_TOP_M - ALT_FLOOR_M), 0, 1)) - 1
+#
+#     300 m(추락선) -1.000     762 m -0.645     914 m -0.591
+#     2300 m        -0.262     7000 m +0.350   15000 m +1.000
+#
+# 왜 sqrt 인가 — 선형 300~2300 이 저고도 해상도는 더 좋지만(0.462) 2300 m 위가 전부
+# 포화해 고고도를 구분하지 못한다. 대회 초기 고도는 "정확한 수치 별도 공지" 라 아직
+# 확정이 아니므로, 저고도를 5.8배 키우면서 전 구간을 살려 두는 쪽을 택했다.
+#
+#     추락선~시작(300->762 m) 해상도:  선형 0~15000  0.062
+#                                      sqrt         0.355  (5.8배)
+#                                      선형 300~2300 0.462  (단 2300 m 위 포화)
+ALT_FLOOR_M = 300.0     # env min_altitude. 여기서 -1.0
+ALT_TOP_M = 15000.0     # 여기서 +1.0
+# 하위 호환용 별칭. 외부에서 이 상수를 참조하는 코드가 있을 수 있다.
+ALT_MAX_M = ALT_TOP_M
 # KCAS는 m/s. 코너속도 부근이 ~180 m/s, 실전 범위 80~350 m/s라 400에서 포화시킨다.
 KCAS_MAX_MS = 400.0
 DISTANCE_MAX_M = 20000.0
@@ -136,6 +158,22 @@ def _norm(value: float, low: float, high: float) -> float:
         return 0.0
     scaled = (_finite(value) - low) / span * 2.0 - 1.0
     return _clip(scaled, -1.0, 1.0)
+
+
+def _alt_norm(value: float) -> float:
+    """고도를 [-1, 1]로 인코딩한다. 추락선 근처의 해상도를 우선한다.
+
+    선형 정규화는 추락선(300 m)과 교전 시작 고도 사이를 전체 범위의 3%로만 표현해,
+    정책이 "지면에 가까워지고 있다"를 볼 수 없었다. 제곱근은 낮은 쪽에 해상도를
+    몰아주면서 상한까지의 단조성을 유지한다.
+
+    무상태이고 NaN/inf 를 흡수한다(build_observation 계약, defect 3 참조).
+    """
+    span = ALT_TOP_M - ALT_FLOOR_M
+    if not math.isfinite(span) or span <= 0.0:
+        return 0.0
+    ratio = _clip((_finite(value) - ALT_FLOOR_M) / span, 0.0, 1.0)
+    return _clip(2.0 * math.sqrt(ratio) - 1.0, -1.0, 1.0)
 
 
 def _symmetric_norm(value: float, half_span: float) -> float:
@@ -324,7 +362,7 @@ def build_observation(ownship_state, target_state, geo_info, wez_config=None):
     )
 
     # --- 0, 1: 자기 상태 ---
-    obs[0] = _norm(_state_value(ownship_state, StateIndex.ALT), 0.0, ALT_MAX_M)
+    obs[0] = _alt_norm(_state_value(ownship_state, StateIndex.ALT))
     obs[1] = _norm(_state_value(ownship_state, StateIndex.KCAS), 0.0, KCAS_MAX_MS)
 
     # --- 2, 3: 각도 (부호 유지) ---
