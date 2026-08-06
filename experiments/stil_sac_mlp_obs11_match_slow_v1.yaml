@@ -1,0 +1,212 @@
+# 초기 속도 300 -> 200 m/s. 고도/시간/상대는 match_v1 과 같다.
+#
+# 왜 (2026-08-05 실측 + 물리)
+#   762 m 배치에서 **BT 상대도 1/3 가량 추락한다** (적기추락 5/15, 2/3).
+#   손으로 만든 조종기가 7000 m 에서는 0~3/20 만 떨어지는데 762 m 에서 이렇다.
+#   즉 우리 정책만의 문제가 아니라 초기 조건 자체가 어떤 조종기에도 가혹하다.
+#
+#   정상 선회 반경 r = v^2 / (g*sqrt(n^2-1)) 로 보면 이유가 분명하다.
+#   고도 여유는 762 - 300 = 462 m 뿐이다.
+#
+#       속도       2g     4g     6g     9g
+#      150 m/s   1325    592    388    257
+#      200 m/s   2355   1053    689    456
+#      300 m/s   5299   2370   1551   1026     <- 9g 로 당겨도 반경 1,030 m
+#
+#   수직 선회에서 고도 변화는 반경의 최대 2배까지 간다. 300 m/s 는 최대 하중에서도
+#   여유를 넘기므로 "지면을 피하면서 기동" 자체가 성립하지 않는다.
+#   200 m/s / 6g 면 반경 689 m 로 회복 가능한 영역에 들어온다.
+#
+# 근거의 성격
+#   속도 300 m/s 는 **규정이 정한 값이 아니라 호스트 기본값**이다
+#   (`src/dogfight/config.py:41-42`). 규정(§5)은 고도대만 주고 "정확한 수치는
+#   별도 공지" 라고 했다. 즉 공지 전까지 속도는 우리가 고를 수 있는 자유도이고,
+#   학습이 성립하는 값을 고르는 편이 낫다.
+#
+#   **공지가 나오면 그 값으로 되돌려야 한다.** 이 YAML 은 그때까지의 잠정값이다.
+#
+# stil11 (자세 3개 추가: roll / pitch / climb_rate) 로 다시 세운 실험.
+# stil8 은 행동이 [roll, pitch, rudder, throttle] 인데 관측에 자세가 하나도 없어
+# 정책이 자기 자세를 못 보고 명령했다. 고도·보상·상대를 무엇으로 바꿔도 추락률이
+# 1.00 이었던 직접 원인이다 (analysis/bt30_after/판정_20260805.md).
+# 관측 차원이 8 -> 11 로 바뀌었으므로 이전 checkpoint 는 전부 재사용 불가다.
+#
+# STIL SAC MLP — **대회 초기 배치/라운드 길이** 적용 (2026-08-04)
+#
+# 이것은 보상 A/B 가 아니라 **regime 실험**이다. 대회 조건에서 정책이 성립하는지 본다.
+# 한 번에 세 가지가 바뀌므로 개별 기여를 분리할 수 없다. 그게 목적이다.
+#
+#   1) 초기 고도  7,000 m -> 762 m (2500 ft)      competiton_rules.md §5
+#   2) 라운드 길이  120초 -> 200초                  competiton_rules.md §5
+#   3) altitude_safe_band_m  2000 -> 500           (1) 때문에 강제되는 재조정
+#
+# 왜 (3)이 강제인가
+#   고도 항은 margin = clip((alt - min_altitude)/band, 0, 1) 로 정규화된다.
+#   band=2000 을 그대로 두고 762 m 에서 시작하면 첫 step 부터 큰 상수 패널티가 깔려
+#   교전 신호를 덮는다. 저고도 regime 에서는 band 를 같이 줄여야 의미가 유지된다.
+#   계산은 env_config.reward 주석 참조.
+#
+# 바뀌지 않은 것
+#   관측(stil8) / 상대(BT, AIP_STIL.dll) / 알고리즘 / 하이퍼파라미터 /
+#   거리 게이트·closure 값 / WEZ(각도 2.0, 500~3000 ft)
+#
+# WEZ 를 대회 Phase 에 맞추지 않은 이유 (D-8)
+#   대회 대미지는 시간에 따라 1° -> 2° -> 3° 로 완화되지만(§6), 학습 환경의
+#   update_damage() 는 고정 각도만 지원하고 그 파일은 수정 금지다.
+#   게다가 30판 실측 최선이 15.39° 라 Phase 3 의 3° 로 넓혀도 여전히 5배 부족하다.
+#   즉 게이트 폭이 아니라 정렬 기울기가 병목이므로, 가장 엄격한 Phase 1(반각 1.0°)을
+#   그대로 둔다. 여기서 되면 모든 Phase 에서 된다.
+#
+# 선행 조건 — 2026-08-05 적용 완료
+#   my_observation.py 의 고도 인코딩을 선형(0~15000)에서 sqrt(300~15000)로 바꿨다.
+#   종전에는 추락선(300 m)~시작고도(762 m)가 obs 범위 2.0 중 0.062(3%)뿐이라
+#   정책이 고도 변화를 볼 수 없었고, 실측에서 30/30 판이 마지막 5초에 1,449 m 를
+#   잃고(≈290 m/s 수직) 추락했다 (analysis/bt30_after/판정_20260805.md §3).
+#   지금은 0.355 (5.8배). 계약 검사 230건이 이 해상도를 값으로 못박는다.
+#
+#   따라서 이 실험은 **처음부터** 학습한다. 관측 스케일이 달라져 이전 checkpoint 는
+#   재사용할 수 없다. tools/check_hook_drift.py 가 옛 번들 평가를 자동 차단한다.
+#
+# 주의 — 이 실험은 stil_sac_mlp_obs8_rangegate_bt_v1 과 직접 비교할 수 없다.
+#   교전 시간과 초기 고도가 다르므로 거리/추락 지표의 기준선이 다르다.
+#   비교하려면 같은 조건에서 구 정책을 재측정해야 한다(run_bt_batch.ps1 -MaxEngageTime 200).
+#
+name: stil_sac_mlp_obs11_match_slow_v1
+script: train_rllib
+
+output:
+  name: stil
+  tag: sac_mlp_obs11_match_slow_v1
+
+# 1) 시나리오
+# 관측은 student/my_observation.py (stil8, 8차원)로 고정한다.
+# 이 module path는 아래 5곳에 동일하게 적혀 있어야 한다 (Docs/09 §2):
+#   이 YAML / train CLI / metadata.json / run_local_dogfight.py / my_submission.py
+env:
+  observation_mode: custom
+  observation_module: student.my_observation
+  reward_module: student.my_reward
+  # baseline은 고정 표적으로 수렴 자체를 먼저 확인한다.
+  # BT 스파링(Gate 3 비교용)으로 올릴 때 아래 두 줄로 교체하고
+  # runtime.init_bundle 에 이 실험의 bundle을 지정한다.
+  #   target_mode: behavior_tree
+  #   target_behavior_dll: AIP_BASE_target.dll
+  target_mode: behavior_tree
+  target_behavior_dll: AIP_STIL.dll
+  max_engage_time: 200.0     # 대회 라운드 상한 (competiton_rules.md §5)
+  episode_step_limit: 12000  # 200초 x sim_hz 60. 이 값은 내부 tick 단위다
+
+# 1+) 세부 환경 설정 (train_rllib.py가 env 기본값에 deep merge)
+env_config:
+  step_ratio: 6
+  # ── 대회 초기 배치 (2026-08-04) ────────────────────────────────────────────
+  # [N, E, D, roll, pitch, heading, speed]  — D 는 아래방향이라 고도는 -D 다.
+  # 호스트 기본값은 둘 다 D=-7000.0 (7,000 m) 인데, 대회 초기 배치는
+  # "약 2000~3000 ft 고도대"(609.6~914.4 m)다 (competiton_rules.md §5).
+  # 그 중앙인 2500 ft = 762.0 m 를 쓴다.
+  #
+  # ** 이 키가 실제로 초기 위치를 정한다. `initial_scenario` 가 아니다. **
+  # initial_scenario 는 mode 가 two_circle_headon / ref_old_random 일 때만 읽힌다
+  # (single_agent_env.py:240-247). 기본 mode 는 "default" 라 그 블록이 통째로 무시되고,
+  # 여기 ownship/target 리스트가 그대로 FighterSim 에 들어간다(:148-175).
+  #
+  # N 간격 5,000 m 와 헤드온(heading 0 / 180), 속도 300 m/s 는 호스트 기본값 그대로다.
+  # 규정은 고도대만 주고 "정확한 수치는 별도 공지" 라 했으므로, 확인된 것만 바꾼다.
+  ownship: [1000.0, 0.0, -762.0, 0.0, 0.0,   0.0, 200.0]
+  target:  [6000.0, 0.0, -762.0, 0.0, 0.0, 180.0, 200.0]
+  # ownship_randomization 은 켜지 않는다. default 모드에서 켜면
+  # add_random_init_position() 이 `_init_pos_* += ...` 로 **누적**되어
+  # (single_agent_env.py:844-849) 에피소드마다 random walk 가 되고, 수백 판 뒤에는
+  # 초기 위치가 지면 아래로도 간다. 벤더 기본값이 enabled: False 인 이유다.
+  # WEZ 기준. my_observation.py / my_reward.py의 fallback 상수와 같은 값이며,
+  # 여기 값이 wez_config로 전달되어 우선한다. 500 ft / 3000 ft.
+  wez:
+    angle_deg: 2.0
+    min_range_m: 152.4
+    max_range_m: 914.4
+  # !! 주의 (2026-08-04 실측으로 정정) !!
+  # "이 블록은 reward_module 을 끌 때만 쓰인다"는 설명은 **틀렸다.**
+  # train_rllib.py:72 가 `cfg.setdefault("reward", reward_config)` 를 쓰기 때문에,
+  # 이 블록이 존재하면 MY_REWARD_CONFIG 는 **통째로 버려지고** 아래 값이 그대로
+  # 훅에 전달된다. 여기 없는 키(pursuit_weight, angle_full_range_m, closure_weight 등
+  # 16개)는 compute_reward 안의 `cfg.get(key, 기본값)` 인라인 기본값이 쓰인다.
+  #
+  # 결과적으로 **MY_REWARD_CONFIG 만 고치면 학습에 아무 영향이 없다.**
+  # 튜닝 방법은 둘 중 하나다:
+  #   (a) 이 블록에 키를 추가한다  <- 실험별로 바꿀 값은 이쪽이 낫다(YAML 이 실험 기록이다)
+  #   (b) compute_reward 의 인라인 기본값을 고친다  <- 전 실험 공통 기본값을 옮길 때
+  # 둘이 어긋나지 않도록 check_student_contracts.py 8-C 가 값으로 검사한다.
+  reward:
+    mode: default
+    step_penalty: -0.005
+    damage_scale: 20.0
+    pursuit_scale: 0.3
+    low_altitude_penalty: 0.1
+    win_reward: 100.0
+    loss_reward: -100.0
+    draw_reward: -10.0
+    # ── 저고도 배치에 맞춘 재조정 (이 실험에서 유일하게 바꾸는 보상 값) ──
+    # 인라인 기본값 altitude_safe_band_m = 2000.0 은 7,000 m 시작을 전제한 값이다.
+    # 그 값 그대로 762 m 에서 시작하면 margin = (762-300)/2000 = 0.23 이라
+    # **첫 step 부터 -0.4 x 0.77^2 = -0.237/step 이 상수로 깔린다.** 200초(2000 step)면
+    # 누적 -474 로, crash_penalty(-150)보다 크고 교전 신호를 완전히 덮는다.
+    #
+    # 500 으로 낮추면 762 m 에서 margin = 0.924 -> 패널티 -0.0023 (거의 0)이고,
+    # 600 m 에서 -0.036, 450 m 에서 -0.1, 300 m(추락선)에서 -0.4 로 가파르게 커진다.
+    # 즉 "시작 고도에서는 조용하고 내려갈수록 급해지는" 원래 의도를 저고도에서 복원한다.
+    altitude_safe_band_m: 500.0
+
+# 2) 알고리즘 + 3) 하이퍼파라미터 + 5) 신경망
+# 계획서 지정값: gamma=0.99, tau=0.005, alpha auto-tune, lr 기본값
+algo:
+  name: sac
+  framework: torch
+  lr: 3.0e-4
+  gamma: 0.99
+  tau: 0.005
+  target_entropy: auto        # alpha auto-tune
+  train_batch_size: 256
+  minibatch_size: 256
+  replay_buffer_capacity: 100000
+  mlp:
+    enabled: true
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    head_fcnet_hiddens: []
+    head_fcnet_activation: relu
+
+runtime:
+  iterations: 400
+  num_env_runners: 1
+  num_envs_per_env_runner: 1
+  rollout_fragment_length: auto
+  batch_mode: truncate_episodes
+  checkpoint_frequency: 100
+  save_native_checkpoint: true
+  # 재개:
+  #   restore_checkpoint: artifacts/checkpoints/stil/sac_mlp_v1/checkpoint_000020
+  # 이 baseline을 시드로 BT 스파링을 시작할 때:
+  #   init_bundle: artifacts/models/stil/sac_mlp_v1
+
+# 6) 로그
+dashboard:
+  enabled: true
+  logdir: artifacts/dashboard
+
+# 고정 입력에 대한 actor 출력 추적. 정책이 죽었는지(상수 출력) 조기 확인용.
+policy_probe:
+  enabled: true
+  interval: 10
+  steps: 4
+  print: true
+
+# 학습 중 짧은 평가 교전 -> 패배 패턴 보고서의 1차 자료.
+engagement_log:
+  enabled: true
+  interval: 20
+  steps: 600
+  episodes: 1
+  print: true
+
+notes: "각도 shaping 거리 게이트(angle_full_range_m/angle_zero_range_m) 적용본. baseline 은 sac_mlp_obs8_iter400. 관측/상대/하이퍼파라미터 동일 — 보상만 다르다."
+

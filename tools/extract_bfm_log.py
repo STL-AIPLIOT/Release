@@ -48,6 +48,11 @@ LINE_RE = re.compile(
 CIRCLE_RE = re.compile(r"Circle=(?P<circle>1C|2C|NONE)")
 
 
+# 파싱 실패 통계. write_outputs 가 메타에 싣는다.
+# stdout 은 라인 원자성이 없어 JSBSim 출력과 섞이면 그 줄을 잃는다.
+_PARSE_STATS: dict[str, int] = {"seen": 0, "unmatched": 0}
+
+
 def parse(stdout_path: Path) -> list[dict[str, object]]:
     """stdout 로그를 (episode, time, mode, verdict, circle) 행으로 바꾼다."""
     rows: list[dict[str, object]] = []
@@ -64,9 +69,11 @@ def parse(stdout_path: Path) -> list[dict[str, object]]:
     for lineno, line in enumerate(text.splitlines(), 1):
         if "SetBFMMode_" not in line:
             continue
+        _PARSE_STATS["seen"] += 1
         m = LINE_RE.search(line)
         if not m:
             unmatched += 1
+            _PARSE_STATS["unmatched"] += 1
             if unmatched <= 5:
                 warn(f"{stdout_path.name}:{lineno} 형식이 맞지 않는다: {line.strip()[:90]}")
             continue
@@ -150,6 +157,20 @@ def write_outputs(rows: list[dict[str, object]], timeline: list[dict[str, object
         "last_segment_count": sum(1 for t in timeline if t["last_segment"]),
         "note": ("각 에피소드의 마지막 구간은 종료 시각을 알 수 없어 duration_sec 이 "
                  "비어 있다. 체류시간 집계 시 제외하거나 별도 처리해야 한다."),
+        # stdout 은 라인 원자성이 없다. JSBSim(다른 DLL)이 같은 stdout 에 쓰면서
+        # BT 한 줄 중간에 끼어들면 그 줄은 파싱되지 않는다. 조용히 넘기지 않고 수치로 남긴다.
+        "parsed_lines": _PARSE_STATS["seen"] - _PARSE_STATS["unmatched"],
+        "unmatched_lines": _PARSE_STATS["unmatched"],
+        "unmatched_ratio": (_PARSE_STATS["unmatched"] / _PARSE_STATS["seen"]
+                            if _PARSE_STATS["seen"] else None),
+        "unmatched_cause": ("stdout 라인 원자성 없음 — JSBSim 출력과 섞인 줄. "
+                            "손실률이 1% 를 넘으면 집계를 신뢰하지 말 것."),
+        # BB->BFM 은 SetBFMMode_* 가 성공할 때만 쓰이고, 전부 실패해도 초기화되지 않는다.
+        # 따라서 PredictManeuver CSV 의 bfmMode 는 '지금 모드'가 아니라
+        # '마지막으로 진입에 성공한 모드'다. 이 타임라인(Enter 기준)이 정확한 쪽이다.
+        "sticky_bfm_warning": ("BB->BFM 은 초기화되지 않는다(sticky). 'BFM=X 가 N tick 지속' 은 "
+                               "'N tick 동안 X 모드였다'가 아니라 'X 가 마지막 성공 모드다' 라는 뜻이다. "
+                               "체류 시간은 이 파일의 Enter 이벤트 간격으로 계산하라."),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
     (outdir / "bfm_extract_meta.json").write_text(

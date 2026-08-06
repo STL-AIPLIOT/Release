@@ -1,0 +1,155 @@
+# STIL SAC MLP — 거리 게이트 + closure, **BT 상대** (2026-08-04)
+#
+#
+# 상대: BT (`AIP_STIL.dll`). 고정 표적이 아니다.
+#
+# 왜 BT 상대인가
+#   고정 표적 regime 은 crash_rate 1.00 / ep_mean_distance 7.4 km 로, 추락 신호가
+#   보상 변경 효과를 덮는다. BT 상대는 30판 실측에서 추락 0.033 / timeout 0.967 로
+#   훨씬 건강한 regime 이고, 무엇보다 **거리 게이트의 근거 데이터가 나온 곳**이다.
+#
+# 비교 기준선을 새로 만들지 않는다
+#   구 보상 정책(sac_mlp_obs8_iter400) 대 같은 BT 의 행동 기준선이 이미 있다
+#   (analysis/bt30/, 30판):
+#       거리 중앙 8,014 m / 판별 최근접 125.5 m (30판 동일)
+#       WEZ 밴드 내 |ATA| 중앙 60.2°, 30판 전체 최선 15.39° (게이트 1.0°)
+#       피해 조건 충족 프레임 0, 양측 체력 1.0
+#   학습 후 같은 30판 프로토콜을 재실행해 이 숫자들과 직접 비교한다.
+#
+# 상대 DLL 주의
+#   벤더 `AIP_BASE_target.dll` 은 쓸 수 없다. `init()` 이 './Rule.xml' 을 하드코딩하는데
+#   Release 루트의 Rule.xml 이 팀 트리용(98요소)이라 벤더 DLL 이 자기 노드를 못 찾고
+#   0xe06d7363(C++ 예외)으로 죽는다. 루트에는 Rule.xml 을 하나만 둘 수 있다.
+#   벤더 원본은 C:\AIP_LIB\Rule.xml (1104 B) 에 남아 있다.
+#
+# baseline: stil_sac_mlp_obs8_iter400 (tag sac_mlp_obs8_iter400)
+# 바뀐 것은 student/my_reward.py 의 pursuit/position 거리 계수 하나뿐이다.
+# 관측(stil8/8차원) · 상대(fixed) · 알고리즘 · 하이퍼파라미터는 baseline 과 동일하게 두어
+# 보상 변경의 효과만 분리해서 본다.
+#
+# 왜 바꿨나 (BT 상대 10판 / 22,921 프레임 실측)
+#   8 km 초과  53.2% 프레임, |ATA| 중앙 6.3도 -> pursuit +0.520/step
+#   4~8 km     33.9% 프레임, |ATA| 중앙 7.9도 -> pursuit +0.513/step
+#   WEZ 내      0.1% 프레임
+#   pursuit 누적 11,715 중 10,320(88%)이 4 km 밖에서 나왔다.
+#   -> "붙지 않고 정조준만 유지"가 가장 이득인 구조였다.
+#      게이트를 적용하면 같은 궤적의 pursuit 누적이 11,715 -> 516 (4.4%)로 줄어든다.
+#
+# 관측은 그대로이므로 baseline checkpoint 를 init_bundle 로 이어받을 수 있다.
+# 다만 보상이 바뀌면 가치함수가 달라지므로, 처음에는 scratch 로 돌려 비교하는 편이 깨끗하다.
+#
+# 판정 기준
+#   - ep_wez_steps 가 baseline(거의 0)보다 오르는가  <- 핵심
+#   - crash_rate 가 나빠지지 않는가
+#   - ep_min_distance 중앙값이 줄어드는가
+#
+name: stil_sac_mlp_obs8_rangegate_bt_v1
+script: train_rllib
+
+output:
+  name: stil
+  tag: sac_mlp_obs8_rangegate_bt_v1
+
+# 1) 시나리오
+# 관측은 student/my_observation.py (stil8, 8차원)로 고정한다.
+# 이 module path는 아래 5곳에 동일하게 적혀 있어야 한다 (Docs/09 §2):
+#   이 YAML / train CLI / metadata.json / run_local_dogfight.py / my_submission.py
+env:
+  observation_mode: custom
+  observation_module: student.my_observation
+  reward_module: student.my_reward
+  # baseline은 고정 표적으로 수렴 자체를 먼저 확인한다.
+  # BT 스파링(Gate 3 비교용)으로 올릴 때 아래 두 줄로 교체하고
+  # runtime.init_bundle 에 이 실험의 bundle을 지정한다.
+  #   target_mode: behavior_tree
+  #   target_behavior_dll: AIP_BASE_target.dll
+  target_mode: behavior_tree
+  target_behavior_dll: AIP_STIL.dll
+  max_engage_time: 120.0
+  episode_step_limit: 7200
+
+# 1+) 세부 환경 설정 (train_rllib.py가 env 기본값에 deep merge)
+env_config:
+  step_ratio: 6
+  # WEZ 기준. my_observation.py / my_reward.py의 fallback 상수와 같은 값이며,
+  # 여기 값이 wez_config로 전달되어 우선한다. 500 ft / 3000 ft.
+  wez:
+    angle_deg: 2.0
+    min_range_m: 152.4
+    max_range_m: 914.4
+  # !! 주의 (2026-08-04 실측으로 정정) !!
+  # "이 블록은 reward_module 을 끌 때만 쓰인다"는 설명은 **틀렸다.**
+  # train_rllib.py:72 가 `cfg.setdefault("reward", reward_config)` 를 쓰기 때문에,
+  # 이 블록이 존재하면 MY_REWARD_CONFIG 는 **통째로 버려지고** 아래 값이 그대로
+  # 훅에 전달된다. 여기 없는 키(pursuit_weight, angle_full_range_m, closure_weight 등
+  # 16개)는 compute_reward 안의 `cfg.get(key, 기본값)` 인라인 기본값이 쓰인다.
+  #
+  # 결과적으로 **MY_REWARD_CONFIG 만 고치면 학습에 아무 영향이 없다.**
+  # 튜닝 방법은 둘 중 하나다:
+  #   (a) 이 블록에 키를 추가한다  <- 실험별로 바꿀 값은 이쪽이 낫다(YAML 이 실험 기록이다)
+  #   (b) compute_reward 의 인라인 기본값을 고친다  <- 전 실험 공통 기본값을 옮길 때
+  # 둘이 어긋나지 않도록 check_student_contracts.py 8-C 가 값으로 검사한다.
+  reward:
+    mode: default
+    step_penalty: -0.005
+    damage_scale: 20.0
+    pursuit_scale: 0.3
+    low_altitude_penalty: 0.1
+    win_reward: 100.0
+    loss_reward: -100.0
+    draw_reward: -10.0
+
+# 2) 알고리즘 + 3) 하이퍼파라미터 + 5) 신경망
+# 계획서 지정값: gamma=0.99, tau=0.005, alpha auto-tune, lr 기본값
+algo:
+  name: sac
+  framework: torch
+  lr: 3.0e-4
+  gamma: 0.99
+  tau: 0.005
+  target_entropy: auto        # alpha auto-tune
+  train_batch_size: 256
+  minibatch_size: 256
+  replay_buffer_capacity: 100000
+  mlp:
+    enabled: true
+    fcnet_hiddens: [256, 256]
+    fcnet_activation: relu
+    head_fcnet_hiddens: []
+    head_fcnet_activation: relu
+
+runtime:
+  iterations: 400
+  num_env_runners: 1
+  num_envs_per_env_runner: 1
+  rollout_fragment_length: auto
+  batch_mode: truncate_episodes
+  checkpoint_frequency: 100
+  save_native_checkpoint: true
+  # 재개:
+  #   restore_checkpoint: artifacts/checkpoints/stil/sac_mlp_v1/checkpoint_000020
+  # 이 baseline을 시드로 BT 스파링을 시작할 때:
+  #   init_bundle: artifacts/models/stil/sac_mlp_v1
+
+# 6) 로그
+dashboard:
+  enabled: true
+  logdir: artifacts/dashboard
+
+# 고정 입력에 대한 actor 출력 추적. 정책이 죽었는지(상수 출력) 조기 확인용.
+policy_probe:
+  enabled: true
+  interval: 10
+  steps: 4
+  print: true
+
+# 학습 중 짧은 평가 교전 -> 패배 패턴 보고서의 1차 자료.
+engagement_log:
+  enabled: true
+  interval: 20
+  steps: 600
+  episodes: 1
+  print: true
+
+notes: "각도 shaping 거리 게이트(angle_full_range_m/angle_zero_range_m) 적용본. baseline 은 sac_mlp_obs8_iter400. 관측/상대/하이퍼파라미터 동일 — 보상만 다르다."
+

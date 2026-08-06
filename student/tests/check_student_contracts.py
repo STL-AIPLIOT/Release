@@ -415,6 +415,44 @@ def test_observation_semantics():
         "교전 고도 7000 m / 속도 200 m/s가 정규화 중앙 근처",
     )
 
+    # --- 저고도 해상도 (2026-08-05) ---------------------------------------
+    # 대회 초기 배치는 약 2000~3000 ft(609.6~914.4 m)이고 추락선은 300 m다.
+    # 선형 0~15000 인코딩에서는 이 생사 구간이 전체 범위 2.0 중 0.062(3%)뿐이라
+    # 정책이 고도 변화를 볼 수 없었고, 30/30 판이 마지막 5초에 1,449 m를 잃고
+    # 추락했다 (analysis/bt30_after/판정_20260805.md §3).
+    #
+    # 여기서 재는 것은 "값이 범위 안인가"가 아니라 **해상도**다.
+    # 그건 기존 검사(범위/finite/단조)로는 절대 잡히지 않는다.
+    def alt_obs(alt_m):
+        return float(obs_mod.build_observation(
+            make_state(alt=alt_m), make_state(), GeoStub(), WEZ)[i_alt])
+
+    floor_m = 300.0            # env min_altitude
+    start_m = 762.0            # 2500 ft (대회 초기 배치 중앙)
+    band_lo, band_hi = 609.6, 914.4   # 2000~3000 ft
+
+    life_span = alt_obs(start_m) - alt_obs(floor_m)
+    check(life_span > 0.25,
+          f"추락선(300 m)~시작고도(762 m) 해상도 {life_span:.3f} > 0.25 "
+          f"(선형 0~15000 이었을 때 0.062)")
+
+    band_span = alt_obs(band_hi) - alt_obs(band_lo)
+    check(band_span > 0.08,
+          f"대회 고도대(2000~3000 ft) 해상도 {band_span:.3f} > 0.08")
+
+    # 고고도가 포화하면 안 된다. 대회 초기 고도는 "별도 공지"라 아직 확정이 아니고,
+    # 학습 기본값 7000 m 도 여전히 쓰인다. 저고도만 보려고 상단을 죽이면 안 된다.
+    check(alt_obs(7000.0) < alt_obs(15000.0) - 0.2,
+          f"7000 m({alt_obs(7000.0):+.3f})와 15000 m({alt_obs(15000.0):+.3f})가 구분된다 (상단 미포화)")
+
+    # 단조성과 경계. 추락선 이하는 전부 최저값이어야 "더 내려갈 여지"를 학습하지 않는다.
+    ladder = [alt_obs(a) for a in (300, 450, 600, 762, 914, 2300, 7000, 15000)]
+    check(all(b > a for a, b in zip(ladder, ladder[1:])),
+          f"고도 인코딩이 단조 증가 {[round(v, 3) for v in ladder]}")
+    check(alt_obs(0.0) == alt_obs(floor_m) == -1.0,
+          "추락선 이하는 전부 -1.0 (하한 포화)")
+    check(abs(alt_obs(15000.0) - 1.0) < 1e-9, "상한에서 정확히 +1.0")
+
 
 # ---------------------------------------------------------------------------
 # 6. 보상: 합 == total, NaN 없음
@@ -440,6 +478,7 @@ def test_reward_contract():
         "wez_entry",
         "wez_hold",
         "overclose",
+        "closure",    # v4에서 추가: 거리 게이트가 만든 무신호 구간의 접근 신호
         "energy",
         "altitude",   # v3에서 추가: 고도 안전 마진 dense 패널티
         "crash",
@@ -534,6 +573,329 @@ def test_reward_angle_shaping():
 # ---------------------------------------------------------------------------
 # 9. 보상: WEZ 안전 밴드
 # ---------------------------------------------------------------------------
+def test_reward_angle_range_gate():
+    """각도 shaping 의 거리 게이트 (2026-08-04 추가).
+
+    v3까지 pursuit/position 은 거리와 무관하게 지급돼, 8 km 밖에서 기수만 맞춰도
+    WEZ 안과 비슷한 보상이 나왔다. BT 상대 10판 실측에서 pursuit 누적 11,715 중
+    10,320(88%)이 4 km 밖에서 나왔다. 그 farming 경로를 막는 계수를 검증한다.
+    """
+    section("8-A. 각도 shaping 거리 게이트")
+    cfg = rew_mod.MY_REWARD_CONFIG
+    full_m = cfg["angle_full_range_m"]
+    zero_m = cfg["angle_zero_range_m"]
+    check(full_m < zero_m, f"full_range({full_m}) < zero_range({zero_m})")
+    check(abs(full_m - 914.4) < 1e-6,
+          "full_range 기본값이 WEZ 최대 사거리(914.4 m)와 같다")
+
+    def pursuit_at(distance: float) -> float:
+        rew_mod.reset_reward_state()
+        _, comp = reward(make_state(), make_state(),
+                         GeoStub(distance=distance, ata=0.0, aa=0.0))
+        return comp["pursuit"]
+
+    inside = pursuit_at(full_m * 0.5)
+    at_full = pursuit_at(full_m)
+    mid = pursuit_at((full_m + zero_m) / 2.0)
+    at_zero = pursuit_at(zero_m)
+    beyond = pursuit_at(zero_m * 2.0)
+    far = pursuit_at(8000.0)
+
+    check(abs(inside - at_full) < 1e-9,
+          "full_range 이내에서는 거리와 무관하게 같은 값 (계수 1.0)")
+    check(abs(inside - cfg["pursuit_weight"]) < 1e-6,
+          f"ATA=0, 근거리 -> pursuit == pursuit_weight ({cfg['pursuit_weight']})")
+    check(0.0 < mid < at_full, f"중간 거리는 감쇠된다: {mid:.4f} < {at_full:.4f}")
+    check(abs(at_zero) < 1e-9, f"zero_range 에서 정확히 0 (얻은 값 {at_zero})")
+    check(abs(beyond) < 1e-9, "zero_range 밖에서도 0")
+    check(abs(far) < 1e-9,
+          "실측 중앙 교전거리 8 km 에서 pursuit = 0 (원거리 farming 차단)")
+
+    # 단조 감소여야 한다. 중간에 커지면 특정 거리에 머무는 유인이 생긴다.
+    dists = [full_m, 1500.0, 2000.0, 2500.0, 3000.0, 3500.0, zero_m]
+    vals = [pursuit_at(d) for d in dists]
+    check(all(vals[i] >= vals[i + 1] - 1e-12 for i in range(len(vals) - 1)),
+          f"거리가 멀어질수록 단조 감소: {[round(v, 3) for v in vals]}")
+
+    # 붙을수록 이득이어야 한다(계수가 커지므로). 접근 유인이 실제로 생기는지.
+    check(pursuit_at(1000.0) > pursuit_at(3000.0),
+          "가까워지면 pursuit 가 커진다 -> 접근 자체가 이득")
+
+    # 부호는 뒤집히지 않는다. 적을 등지면 여전히 음수여야 한다.
+    rew_mod.reset_reward_state()
+    _, away = reward(make_state(), make_state(),
+                     GeoStub(distance=1000.0, ata=180.0, aa=0.0))
+    check(away["pursuit"] < 0.0, "근거리에서 적을 등지면 pursuit < 0 (부호 유지)")
+
+    # 거리를 못 읽으면 계수를 1.0 으로 둔다(신호를 지우지 않는다).
+    rew_mod.reset_reward_state()
+    _, nan_d = reward(make_state(), make_state(),
+                      GeoStub(distance=float("nan"), ata=0.0, aa=0.0))
+    check(math.isfinite(nan_d["pursuit"]), "distance 가 NaN 이어도 finite")
+
+    # zero_range 를 full_range 이하로 잘못 두면 하드 컷오프로 동작해야 한다.
+    bad = dict(cfg)
+    bad["angle_zero_range_m"] = bad["angle_full_range_m"] * 0.5
+    rew_mod.reset_reward_state()
+    _, cut = reward(make_state(), make_state(),
+                    GeoStub(distance=full_m * 0.9, ata=0.0, aa=0.0), cfg=bad)
+    check(abs(cut["pursuit"] - cfg["pursuit_weight"]) < 1e-6,
+          "잘못된 설정에서도 full_range 이내는 전액 (하드 컷오프로 축퇴)")
+
+
+def test_observation_attitude():
+    """자세 특징 (2026-08-05, stil8 -> stil11).
+
+    왜 넣었나
+    ---------
+    행동은 [roll, pitch, rudder, throttle] 인데 stil8 관측에는 자세가 없었다.
+    정책이 자기 roll/pitch 를 보지 못한 채 그것을 명령했고, MLP 라 이전 프레임으로
+    적분할 수도 없었다. 고도(7000 m / 762 m)·보상(게이트 유무)·상대(fixed / BT)를
+    무엇으로 바꾸든 추락률이 1.00 이었던 이유다.
+
+    여기서 재는 것은 "값이 범위 안인가" 가 아니라 **실제로 자세에 반응하는가** 다.
+    그건 기존 검사(shape/finite/범위)로는 전혀 잡히지 않는다 — stil11 로 늘린 직후
+    기존 230건이 그대로 통과했다.
+    """
+    section("2-B. 자기 자세 관측 (stil11)")
+
+    for name in ("own_roll_norm", "own_pitch_norm", "own_climb_rate_norm"):
+        check(name in F, f"feature 목록에 {name}")
+
+    i_roll = F.index("own_roll_norm")
+    i_pitch = F.index("own_pitch_norm")
+    i_climb = F.index("own_climb_rate_norm")
+
+    def ob(**kw):
+        return obs_mod.build_observation(make_state(**kw), make_state(), GeoStub(), WEZ)
+
+    # --- roll: 부호와 단조성 ---
+    check(abs(float(ob(roll=0.0)[i_roll])) < 1e-6, "wings-level -> roll 특징 0")
+    check(float(ob(roll=45.0)[i_roll]) > 0.0, "우로 뱅크 -> roll > 0")
+    check(float(ob(roll=-45.0)[i_roll]) < 0.0, "좌로 뱅크 -> roll < 0")
+    ladder = [float(ob(roll=r)[i_roll]) for r in (-180, -90, -30, 0, 30, 90, 180)]
+    check(all(b > a for a, b in zip(ladder, ladder[1:])),
+          f"roll 이 단조 증가 {[round(v, 3) for v in ladder]}")
+    check(abs(float(ob(roll=180.0)[i_roll]) - 1.0) < 1e-6
+          and abs(float(ob(roll=-180.0)[i_roll]) + 1.0) < 1e-6,
+          "roll ±180(배면)이 각각 ±1 로 포화 — 감싸는 지점이며 의도된 불연속")
+
+    # --- pitch: 기수 상하 ---
+    check(abs(float(ob(pitch=0.0)[i_pitch])) < 1e-6, "수평 -> pitch 특징 0")
+    check(float(ob(pitch=30.0)[i_pitch]) > 0.0, "기수 상승 -> pitch > 0")
+    check(float(ob(pitch=-30.0)[i_pitch]) < 0.0, "기수 하강 -> pitch < 0")
+    check(abs(float(ob(pitch=90.0)[i_pitch]) - 1.0) < 1e-6, "pitch +90 에서 +1 포화")
+
+    # --- climb rate: 부호 규약이 고도와 같은 방향인가 ---
+    # 이게 뒤집히면 정책이 "내려가는 중" 을 "올라가는 중" 으로 읽는다. 가장 위험한 실수다.
+    # body w(아래 양수)만 있고 자세가 수평이면 vd = +w 이므로 상승률은 -w 다.
+    diving = float(ob(pitch=0.0, u=0.0, v=0.0, w=100.0)[i_climb])
+    climbing = float(ob(pitch=0.0, u=0.0, v=0.0, w=-100.0)[i_climb])
+    check(diving < 0.0, f"강하 중 -> climb_rate < 0 ({diving:+.3f})")
+    check(climbing > 0.0, f"상승 중 -> climb_rate > 0 ({climbing:+.3f})")
+    check(abs(diving + climbing) < 1e-6, "같은 크기의 상승/강하가 대칭")
+
+    # 기수를 들고 전진하면 상승이어야 한다 (body u 가 pitch 로 회전된다).
+    nose_up = float(ob(pitch=30.0, u=200.0, v=0.0, w=0.0)[i_climb])
+    check(nose_up > 0.0, f"기수 30도 + 전진 200 m/s -> climb_rate > 0 ({nose_up:+.3f})")
+
+    # --- 무상태성과 NaN (defect 3 계약) ---
+    a = ob(roll=20.0, pitch=-10.0, w=50.0)
+    b = ob(roll=20.0, pitch=-10.0, w=50.0)
+    check(bool(np.array_equal(a, b)), "같은 입력 -> 같은 자세 특징 (무상태)")
+    nan_obs = ob(roll=math.nan, pitch=math.nan, u=math.nan, v=math.nan, w=math.nan)
+    check(bool(np.all(np.isfinite(nan_obs))), "자세가 NaN 이어도 전 특징 finite")
+
+
+def test_reward_config_defaults_match():
+    """`MY_REWARD_CONFIG` 와 `compute_reward` 인라인 기본값이 같은지 검사한다.
+
+    왜 필요한가 (2026-08-04 확인)
+    ---------------------------
+    `train_rllib.py:72` 는 `cfg.setdefault("reward", reward_config)` 로 훅 설정을 넣는다.
+    **setdefault 라서, YAML 에 `env_config.reward` 블록이 있으면 `MY_REWARD_CONFIG` 는
+    통째로 버려진다.** 실제로 팀 실험 YAML 에는 그 블록이 있으므로, 훅이 받는 cfg 에는
+    우리 키가 하나도 들어 있지 않고 전부 `cfg.get(key, 기본값)` 의 **인라인 기본값**이 쓰인다.
+
+    따라서 `MY_REWARD_CONFIG` 만 고치면 **학습에는 아무 영향이 없다.** 둘이 어긋나는 순간
+    "YAML 대로 돌지 않는 실험"이 되고, 조용해서 알아채기 어렵다. 여기서 값으로 못박는다.
+
+    키 이름을 나열하지 않고 **동작으로** 비교한다. cfg 를 비워 호출한 결과가
+    `MY_REWARD_CONFIG` 로 호출한 결과와 모든 컴포넌트에서 같아야 한다.
+    """
+    section("8-C. MY_REWARD_CONFIG 와 인라인 기본값 일치")
+
+    # 거리/각도/종료를 골고루 밟아 모든 컴포넌트를 깨운다.
+    probes = [
+        ("8 km 정조준",      dict(distance=8000.0, ata=0.0, aa=0.0)),
+        ("4 km 정조준",      dict(distance=4000.0, ata=0.0, aa=0.0)),
+        ("2 km 비스듬",      dict(distance=2000.0, ata=30.0, aa=150.0)),
+        ("밴드 안 정조준",   dict(distance=500.0, ata=0.0, aa=0.0)),
+        ("밴드 안 빗나감",   dict(distance=500.0, ata=45.0, aa=90.0)),
+        ("과근접",           dict(distance=50.0, ata=0.0, aa=0.0)),
+        ("적을 등짐",        dict(distance=3000.0, ata=180.0, aa=0.0)),
+    ]
+    terminals = [
+        ("정상 종료", False, False, ""),
+        ("아군 추락", True, False, "ownship altitude below min"),
+        ("적기 추락", True, False, "target altitude below min"),
+        ("시간 초과", False, True, "max time out"),
+    ]
+
+    def run(cfg, probe, terminal):
+        """같은 시나리오를 두 step 돌린다(직전 상태가 필요한 항이 있다)."""
+        geo = GeoStub(**probe)
+        rew_mod.reset_reward_state()
+        reward(make_state(), make_state(), geo, cfg=cfg)
+        _, comp = reward(make_state(), make_state(), geo,
+                         terminated=terminal[1], truncated=terminal[2],
+                         end_condition=terminal[3], cfg=cfg)
+        return comp
+
+    mismatched = []
+    compared = 0
+    for pname, probe in probes:
+        for tname, term, trunc, end in terminals:
+            full = run(rew_mod.MY_REWARD_CONFIG, probe, (tname, term, trunc, end))
+            bare = run({}, probe, (tname, term, trunc, end))
+            for key in sorted(set(full) | set(bare)):
+                compared += 1
+                a, b = full.get(key), bare.get(key)
+                if a is None or b is None or abs(a - b) > 1e-12:
+                    mismatched.append(f"{pname}/{tname}/{key}: {a} vs {b}")
+
+    check(not mismatched,
+          f"빈 cfg 와 MY_REWARD_CONFIG 의 컴포넌트가 전부 일치 "
+          f"({compared}개 비교, 불일치 {len(mismatched)}건)")
+    for m in mismatched[:8]:
+        print(f"         {m}")
+
+    # 총합도 같아야 한다. 컴포넌트가 같아도 합산 경로가 다를 수 있다.
+    total_bad = []
+    for pname, probe in probes:
+        geo_a, geo_b = GeoStub(**probe), GeoStub(**probe)
+        rew_mod.reset_reward_state()
+        ta, _ = reward(make_state(), make_state(), geo_a, cfg=rew_mod.MY_REWARD_CONFIG)
+        rew_mod.reset_reward_state()
+        tb, _ = reward(make_state(), make_state(), geo_b, cfg={})
+        if abs(ta - tb) > 1e-12:
+            total_bad.append(f"{pname}: {ta} vs {tb}")
+    check(not total_bad, f"총 보상도 일치 (불일치 {len(total_bad)}건)")
+
+    # YAML 의 reward 블록이 우리 키를 하나도 안 갖는다는 사실 자체를 기록해 둔다.
+    # 이게 참인 한, 실험 튜닝은 MY_REWARD_CONFIG 가 아니라 인라인 기본값이 정답지다.
+    yaml_only_keys = {"mode", "damage_scale", "pursuit_scale", "low_altitude_penalty"}
+    check(not (yaml_only_keys & set(rew_mod.MY_REWARD_CONFIG)),
+          "MY_REWARD_CONFIG 는 기본 보상 전용 키(mode/damage_scale/...)를 갖지 않는다")
+
+
+def test_reward_closure():
+    """접근(이탈) 보상 — 거리 게이트가 만든 무신호 구간을 메운다.
+
+    거리 게이트만 넣으면 zero_range 밖에서 pursuit/position 이 정확히 0 이 되어
+    "붙을 이유"가 사라진다. closure 는 거리 **변화량**에 값을 매겨 그 구간의
+    유일한 기울기가 된다.
+
+    핵심 성질은 **farming 불가능성**이다. 거리 변화량의 합은 왕복하면 0 이므로,
+    나갔다 들어오기를 반복해서 이득을 누적할 수 없다. 여기서 그걸 직접 센다.
+
+    주의: 보상 상태는 geo_info 객체를 키로 잡는다(env runner 하나당 하나).
+    호출마다 새 GeoStub 을 넘기면 매번 새 에피소드가 되어 직전 거리가 없어지므로,
+    한 스텁의 distance 를 바꿔가며 연속 step 을 흉내낸다.
+    """
+    section("8-B. 접근(이탈) 보상 closure")
+    cfg = rew_mod.MY_REWARD_CONFIG
+    full_m = cfg["angle_full_range_m"]
+    w = cfg["closure_weight"]
+    span = cfg["closure_span_m"]
+    far = 8000.0
+
+    def step(geo, distance, ata=0.0, aa=0.0, config=None):
+        """같은 geo 스텁으로 다음 step 을 흉내낸다."""
+        geo.distance = distance
+        geo.ata = ata
+        geo.aa = aa
+        return reward(make_state(), make_state(), geo, cfg=config)[1]
+
+    geo = GeoStub()
+    check("closure" in step(geo, far), "components 에 closure 키가 있다")
+
+    # 첫 step 은 직전 거리가 없다 -> 0. 여기서 값을 만들면 reset 마다 공짜 보상이 된다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    check(step(geo, far, ata=90.0, aa=90.0)["closure"] == 0.0,
+          "에피소드 첫 step 은 closure 0 (직전 거리 없음)")
+
+    # 가까워지면 양수, 멀어지면 음수.
+    closing = step(geo, far - 500.0, ata=90.0, aa=90.0)
+    check(closing["closure"] > 0.0, f"가까워지면 closure > 0 ({closing['closure']:.3f})")
+    check(abs(closing["closure"] - w * 500.0 / span) < 1e-9,
+          "값이 w * (변화량/span) 과 정확히 일치")
+
+    opening = step(geo, far, ata=90.0, aa=90.0)
+    check(opening["closure"] < 0.0, f"멀어지면 closure < 0 ({opening['closure']:.3f})")
+    check(abs(closing["closure"] + opening["closure"]) < 1e-9,
+          "같은 폭을 왕복하면 합이 정확히 0 (farming 불가)")
+
+    # 무신호 구간에서 실제로 살아 있는가. 거리 게이트가 죽인 8 km 에서 확인한다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, far)
+    gated = step(geo, far - 300.0)
+    check(gated["pursuit"] == 0.0 and gated["position"] == 0.0,
+          "8 km 에서 pursuit/position 은 여전히 0")
+    check(gated["closure"] > 0.0,
+          f"그 구간에서 closure 만 양수 -> 무신호 구간이 메워졌다 ({gated['closure']:.3f})")
+
+    # 왕복을 여러 번 해도 누적이 0 인지 (farming 시나리오 직접 재현).
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    total = 0.0
+    for d in (far, far - 400.0, far - 800.0, far - 400.0, far, far - 400.0, far):
+        total += step(geo, d)["closure"]
+    check(abs(total) < 1e-9, f"왕복 6 step 누적 closure = {total:.12f} (0 이어야 한다)")
+
+    # full_range 안쪽에서는 꺼진다. 켜두면 최소 사거리 아래로 파고드는 것까지
+    # 보상해 overclose 패널티와 싸운다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, full_m * 0.9)
+    check(step(geo, full_m * 0.5)["closure"] == 0.0,
+          "full_range 안쪽에서는 closure 0 (overclose 담당 구간)")
+
+    # reset 점프 가드: 에피소드 경계의 수 km 점프를 접근으로 세면 안 된다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, 11000.0)
+    check(step(geo, 2000.0)["closure"] == 0.0,
+          f"한 step 9 km 점프는 reset 으로 보고 0 (가드 {rew_mod.CLOSURE_RESET_JUMP_M} m)")
+
+    # 클리핑: 가드 안쪽의 큰 변화도 w 를 넘지 않는다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, far)
+    big = step(geo, far - 1900.0)
+    check(abs(big["closure"]) <= w + 1e-12,
+          f"큰 변화량도 |closure| <= closure_weight ({big['closure']:.3f} <= {w})")
+
+    # 거리를 못 읽는 step 은 값을 만들지 않고, 직후 step 도 튀지 않는다.
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, far)
+    check(step(geo, float("nan"))["closure"] == 0.0, "distance 가 NaN 인 step 은 closure 0")
+    check(step(geo, far - 100.0)["closure"] == 0.0,
+          "NaN 직후 step 도 0 (끊긴 구간을 접근으로 세지 않는다)")
+
+    # 끄면 정확히 사라진다.
+    off = dict(cfg)
+    off["closure_weight"] = 0.0
+    geo = GeoStub()
+    rew_mod.reset_reward_state()
+    step(geo, far, config=off)
+    check(step(geo, far - 500.0, config=off)["closure"] == 0.0,
+          "closure_weight = 0 이면 정확히 0")
+
+
 def test_reward_wez_band():
     section("9. WEZ 안전 밴드 (500~3000 ft)")
     in_band_m = 500.0 * FT_TO_M + 50.0
@@ -787,12 +1149,16 @@ def main() -> int:
 
     test_observation_contract()
     test_observation_nan_guards()
+    test_observation_attitude()
     test_observation_stateless()
     test_observation_closure()
     test_observation_semantics()
     test_reward_contract()
     test_reward_nan_guards()
     test_reward_angle_shaping()
+    test_reward_angle_range_gate()
+    test_reward_closure()
+    test_reward_config_defaults_match()
     test_reward_wez_band()
     test_reward_energy()
     test_reward_terminal()

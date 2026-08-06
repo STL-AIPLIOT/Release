@@ -26,6 +26,21 @@ BT(C++) 의 PredictManeuverCsvLogger 가 쓴 CSV 다. 환경변수 PM_CSV_LOG �
 각도는 전부 degree, 거리는 meter, 시간은 second 다. CSV 자체에는 단위가
 적혀 있지 않으므로 이 사실을 산출물 메타데이터에 함께 기록한다.
 
+bfmMode 컬럼의 의미 — sticky (2026-08-04 실측)
+---------------------------------------------
+`BB->BFM` 은 `SetBFMMode_*` 가 **성공할 때만** 쓰이고, 네 모드가 전부 실패해도
+초기화되지 않는다(초기화하는 곳은 `Task_ClimbToSafeAltitude` 하나뿐).
+
+따라서 이 컬럼은 **'지금 이 프레임의 모드'가 아니라 '마지막으로 진입에 성공한 모드'** 다.
+
+실측 예: BT 상대 10판(각 60초)에서 `SetBFMMode_OBFM` 이 판당 **1회** 진입했는데,
+진단상 `BFM=OBFM` 은 수백~수천 tick 유지됐다. 그 사이 네 모드는 전부 Blocked 였다.
+
+- "BFM=X 가 N tick 지속" 을 "N tick 동안 X 모드로 싸웠다"로 읽으면 **틀린다.**
+- 실제 체류 시간이 필요하면 `tools/extract_bfm_log.py` 의 Enter 이벤트 간격을 쓰라.
+- 아래 SCISSORS 집계도 같은 한계를 갖는다. transition 을 세므로 진입 횟수 자체는
+  과대계상되지 않지만, **체류 시간은 sticky 값에 기반하므로 상한으로만 읽어야 한다.**
+
 SCISSORS 집계 규칙
 ------------------
 **진입 횟수는 상태 행 수가 아니라 transition 수다.** 비-SCISSORS -> SCISSORS 로
@@ -105,8 +120,15 @@ class PredictFrame:
 
     @property
     def match_id(self) -> str:
-        """경기 식별자. runType 이 다르면 같은 episode 번호라도 다른 경기다."""
-        return f"{self.run_type}/ep{self.episode:03d}"
+        """경기 식별자.
+
+        runType 이 다르면 같은 episode 번호라도 다른 경기다. 또 PM_CSV_LOG 는 실행마다
+        새 파일을 쓰면서 episode 를 0 부터 다시 세므로, 여러 파일을 함께 읽으면
+        서로 다른 경기가 같은 ep000 으로 뭉친다. 파일 이름까지 넣어 구분한다.
+        """
+        stem = self.source.stem if self.source is not None else ""
+        return f"{self.run_type}/{stem}/ep{self.episode:03d}" if stem \
+            else f"{self.run_type}/ep{self.episode:03d}"
 
 
 @dataclass

@@ -12,8 +12,9 @@ v2에서 추가된 것 (W2 "보상 함수 v1 -> v2 조정"):
 컴포넌트 (training_log.csv에 ep_reward_<name>으로 기록. 이름을 바꾸면 실험 간
 비교가 끊기므로 유지할 것):
     step      매 step 소액 페널티 ("우물쭈물하지 마라")
-    pursuit   +w_pursuit  * cos(ATA)   "적을 향해 기수를 두라"
-    position  +w_position * cos(AA)    "적의 6시로 가라"
+    pursuit   +w_pursuit  * cos(ATA) * f(거리)  "적을 향해 기수를 두라"
+    position  +w_position * cos(AA)  * f(거리)  "적의 6시로 가라"
+    closure   거리 변화량 * w         "멀어지지 마라" (위 f(거리)가 0인 구간의 유일한 기울기)
     wez_entry WEZ 최초 진입 보너스 (에피소드 내 반복 진입은 체감)
     wez_hold  WEZ 유지 보너스
     overclose WEZ 최소 사거리(500 ft) 미만 패널티
@@ -80,6 +81,10 @@ ENERGY_DELTA_SPAN_M = 20.0
 
 # 한 step에 이 이상 에너지가 튀면 에피소드 reset으로 보고 energy 항을 0으로 둔다.
 ENERGY_RESET_JUMP_M = 1000.0
+# 한 step 만에 이만큼 거리가 변하면 기동이 아니라 에피소드 reset 이다.
+# 실측 최대 접근 속도가 ~250 m/s, step_ratio=6 이면 1 step 이 0.1초라 20~30 m 다.
+# 2000 m 는 거기서 두 자릿수 여유가 있으면서 개막 배치 점프(수 km)는 확실히 거른다.
+CLOSURE_RESET_JUMP_M = 2000.0
 
 # 추락으로 간주할 end_condition 부분 문자열 (소문자 비교).
 # 실제 문자열은 src/dogfight/envs/termination.py 와 single_agent_env.py 가 만든다:
@@ -103,6 +108,50 @@ MY_REWARD_CONFIG = {
     # --- 각도 shaping (상쇄 방지를 위해 pursuit > position 유지) ---
     "pursuit_weight": 0.6,     # cos(ATA)
     "position_weight": 0.3,    # cos(AA)
+    # --- 각도 shaping 의 거리 게이트 (2026-08-04 추가) ---
+    # v3까지 pursuit/position 은 거리와 무관하게 지급됐다. 그래서 8 km 밖에서
+    # 기수만 적 쪽으로 두면 WEZ 안에 들어간 것과 비슷한 보상이 계속 나왔다.
+    #
+    # BT 상대 10판(22,921 프레임) 실측:
+    #     8 km 초과   53.2% 프레임, |ATA| 중앙 6.3도  -> pursuit +0.520/step
+    #     4~8 km      33.9% 프레임, |ATA| 중앙 7.9도  -> pursuit +0.513/step
+    #     WEZ 내       0.1% 프레임
+    #   pursuit 누적 11,715 중 10,320(88%)이 4 km 밖에서 나왔다.
+    #
+    # 즉 "붙지 않고 정조준만 유지"가 가장 이득인 구조였다. 교전이 성립하지 않고
+    # 거리가 중앙값 8.3 km 로 유지된 직접 원인이다.
+    #
+    # full_range 안에서는 1.0, zero_range 밖에서는 0.0, 그 사이는 선형으로 준다.
+    # 하드 컷오프가 아니라 선형인 이유: 컷오프는 밖에서 기울기가 0이라 붙을 이유를
+    # 만들지 못한다. 선형이면 가까워질수록 계수가 커져 접근 자체가 이득이 된다.
+    #
+    # full_range 기본값은 WEZ 최대 사거리(914.4 m = 3000 ft)다. 그 안에서만
+    # 각도가 실제 피해로 이어지므로 감쇠 없이 전액 지급한다.
+    # zero_range 4000 m 는 BFM 진입 게이트(SCISSORS 800 m / DBFM 1500 m)보다
+    # 넉넉히 잡아, 붙는 도중에도 신호가 끊기지 않게 한 값이다.
+    "angle_full_range_m": 914.4,   # 이 거리 이내면 계수 1.0 (WEZ max_range_m)
+    "angle_zero_range_m": 4000.0,  # 이 거리 이상이면 계수 0.0
+    # --- 접근 보상 (거리 게이트와 반드시 짝으로 쓴다, 2026-08-04 추가) ---
+    # 위 게이트만 넣으면 zero_range 밖이 **무신호 구간**이 된다. 실측 중앙 교전거리가
+    # 8 km 인데 4 km 밖에서 pursuit/position 이 0 이면, 거기서는 step_penalty 말고
+    # 아무 기울기가 없어서 "붙을 이유"가 사라진다. 이탈을 막으려면 이탈 자체에
+    # 값을 매겨야 한다.
+    #
+    # closure = w * clip((직전거리 - 현재거리) / span, -1, +1)
+    #
+    # 거리 **변화량**에 비례하므로 에피소드 전체 합은 (시작거리 - 끝거리) 에만
+    # 의존한다. 나갔다 들어오기를 반복해도 합이 0 이라 farming 이 원리적으로
+    # 불가능하다. "가까이 있으면 매 step 지급" 같은 형태를 쓰지 않은 이유다.
+    # 멀어지면 그대로 음수라 이탈에 값이 매겨진다.
+    #
+    # 크기: span 1000 m / w 0.5 면 11 km -> 914 m 완주 시 누적 약 +5.0 이다.
+    # wez_entry_bonus(3.0)와 같은 자릿수로, 접근이 진입 보너스를 압도하지 않는다.
+    #
+    # angle_full_range_m 안쪽에서는 끈다. 그 안은 pursuit 와 overclose 가 맡는
+    # 구간이고, 켜두면 최소 사거리 아래로 파고드는 것까지 보상하게 되어
+    # overclose 패널티와 정면으로 싸운다.
+    "closure_weight": 0.5,
+    "closure_span_m": 1000.0,
     # --- WEZ 안전 밴드 ---
     "wez_entry_bonus": 3.0,
     # 에피소드 내 반복 진입은 가치가 줄어 나갔다 들어오기를 farming할 수 없다.
@@ -278,6 +327,7 @@ class WezRewardState:
         self._entry_count = 0
         self._episode_done = False
         self._prev_energy_adv_m = math.nan
+        self._prev_distance_m = math.nan
 
     @property
     def was_in_wez(self) -> bool:
@@ -385,10 +435,31 @@ def compute_reward(
         aa_deg, _aa_magnitude_deg, ownship_state, target_state
     )
 
+    # --- 각도 shaping 의 거리 계수 ---
+    # full_range 이내 1.0, zero_range 이상 0.0, 그 사이 선형.
+    # 거리를 못 읽으면 1.0 으로 둔다(계수를 만들어내 신호를 지우지 않는다).
+    full_range_m = abs(_finite(cfg.get("angle_full_range_m", 914.4), 914.4))
+    zero_range_m = abs(_finite(cfg.get("angle_zero_range_m", 4000.0), 4000.0))
+    if math.isfinite(distance_m):
+        if distance_m <= full_range_m:
+            range_factor = 1.0
+        elif zero_range_m <= full_range_m or distance_m >= zero_range_m:
+            # zero_range 를 full_range 이하로 잘못 설정하면 하드 컷오프로 동작한다.
+            range_factor = 0.0
+        else:
+            range_factor = (zero_range_m - distance_m) / (zero_range_m - full_range_m)
+        range_factor = _clip(range_factor, 0.0, 1.0)
+    else:
+        range_factor = 1.0
+
     # --- 각도 shaping: pursuit(ATA) / position(AA) ---
     # ATA=0 -> 내 기수가 적을 향함 -> +. AA=0 -> 적의 6시 -> +. AA=180(헤드온) -> -.
-    pursuit = pursuit_w * math.cos(ata_deg * DEG_TO_RAD) if math.isfinite(ata_deg) else 0.0
-    position = position_w * math.cos(aa_deg * DEG_TO_RAD) if math.isfinite(aa_deg) else 0.0
+    # 거리 계수를 곱하므로, 멀리서 기수만 맞추는 것으로는 보상이 나오지 않는다.
+    # 두 항에 같은 계수를 쓰므로 아래 상쇄 가드(pursuit > position)의 부호 관계는 그대로다.
+    pursuit = (pursuit_w * math.cos(ata_deg * DEG_TO_RAD) * range_factor
+               if math.isfinite(ata_deg) else 0.0)
+    position = (position_w * math.cos(aa_deg * DEG_TO_RAD) * range_factor
+                if math.isfinite(aa_deg) else 0.0)
 
     # --- WEZ 안전 밴드 ---
     wez_entry = 0.0
@@ -427,6 +498,24 @@ def compute_reward(
 
         state._was_in_wez = in_wez
 
+    # --- 접근(이탈) 보상 ---
+    # 각도 게이트가 죽어 있는 구간(full_range 밖)에서 유일하게 남는 기울기다.
+    # 거리 변화량에 비례하므로 왕복해도 합이 0 이라 farming 이 안 된다.
+    closure = 0.0
+    closure_w = abs(_finite(cfg.get("closure_weight", 0.5), 0.5))
+    closure_span_m = abs(_finite(cfg.get("closure_span_m", 1000.0), 1000.0))
+    if math.isfinite(distance_m):
+        prev_d = state._prev_distance_m
+        if (closure_w > 0.0 and closure_span_m > 0.0
+                and math.isfinite(prev_d) and distance_m > full_range_m):
+            delta = prev_d - distance_m          # 가까워지면 양수
+            # reset 직후의 점프는 기동의 결과가 아니다(에너지 항과 같은 처리).
+            if abs(delta) <= CLOSURE_RESET_JUMP_M:
+                closure = closure_w * _clip(delta / closure_span_m, -1.0, 1.0)
+        state._prev_distance_m = distance_m
+    else:
+        state._prev_distance_m = math.nan
+
     # --- 에너지 우위의 step 변화량 (소가중치) ---
     energy = 0.0
     own_es = _specific_energy_m(ownship_state)
@@ -462,6 +551,7 @@ def compute_reward(
     components["wez_entry"] = wez_entry
     components["wez_hold"] = wez_hold
     components["overclose"] = overclose
+    components["closure"] = closure
     components["energy"] = energy
     components["altitude"] = altitude
 
