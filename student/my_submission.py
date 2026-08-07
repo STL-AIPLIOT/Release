@@ -59,7 +59,7 @@ from dogfight.unreal import AIType, ProviderCommandPolicy, UnrealAIPilotUDPClien
 # TODO: 아래 설정을 팀에 맞게 수정하세요.
 # =============================================================================
 
-TEAM_NAME = "stil"                                 # TODO: 운영 공지 등록명과 정확히 일치시킬 것
+TEAM_NAME = "stil"                                 # 운영 공지 등록명과 일치 확인 필요
 SERVER_IP = "221.151.77.208"                       # TODO: 경진대회 서버 IP
 SERVER_PORT = 9999
 
@@ -70,8 +70,8 @@ MODE = "rl"
 # 관측 일관성 체인 (Docs/09 §2): 아래 두 값은 BUNDLE_DIR/metadata.json 의
 # obs_mode / observation_module 과 반드시 같아야 한다. 불일치는 에러 없이
 # 이상 행동만 남기는 silent failure가 된다.
-BUNDLE_DIR = "artifacts/models/stil/sac_mlp_v1"    # TODO: 학습된 모델 경로
-OBSERVATION_MODE = "custom"                        # 학습 시 사용한 관측 모드와 동일해야 함
+BUNDLE_DIR = "artifacts/models/stil/sac_mlp_obs11_crash90_v1"  # 30판 결정적 평가 추락 0/30
+OBSERVATION_MODE = "custom"                        # observation_module 이 있으면 훅의 OBSERVATION_MODE(stil11)가 이긴다
 OBSERVATION_MODULE = "student.my_observation"      # 기본 관측이면 빈 문자열
 
 # BT 모드 설정

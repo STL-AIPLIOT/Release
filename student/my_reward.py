@@ -15,6 +15,7 @@ v2에서 추가된 것 (W2 "보상 함수 v1 -> v2 조정"):
     pursuit   +w_pursuit  * cos(ATA) * f(거리)  "적을 향해 기수를 두라"
     position  +w_position * cos(AA)  * f(거리)  "적의 6시로 가라"
     closure   거리 변화량 * w         "멀어지지 마라" (위 f(거리)가 0인 구간의 유일한 기울기)
+    align     밴드 안에서만, 1/(1+(ATA/scale)^2)  "cos 이 평평한 구간에 기울기"
     wez_entry WEZ 최초 진입 보너스 (에피소드 내 반복 진입은 체감)
     wez_hold  WEZ 유지 보너스
     overclose WEZ 최소 사거리(500 ft) 미만 패널티
@@ -152,6 +153,27 @@ MY_REWARD_CONFIG = {
     # overclose 패널티와 정면으로 싸운다.
     "closure_weight": 0.5,
     "closure_span_m": 1000.0,
+    # --- 밴드 안 정렬 항 (2026-08-05 추가, 기본 꺼짐) ---
+    # pursuit 은 cos(ATA) 라서 0 근처에서 미분이 0 이다. 실측으로 확인된 결과:
+    #     ATA 15도 -> 1도 로 좁혀도 pursuit 증가분이 전체 0.0204 뿐이고,
+    #     밴드 체류(약 13 step) 전체로도 0.265 다.
+    # 정작 보상인 wez_entry(3.0)는 반각 1.0도 절벽 뒤에 있다. 즉 마지막 15도를
+    # 좁히라는 신호가 보상의 8.8% 밖에 안 된다. 30판 실측 |ATA| 최선이
+    # 5.37도에서 멈춘 것이 그 결과다.
+    #
+    #     align = w / (1 + (ATA / scale)^2)        (로렌츠형)
+    #
+    # scale=5도 에서 15도->0.10, 5도->0.50, 1도->0.96 으로 **기울기가 1~15도 구간에
+    # 몰린다.** 가우시안 대신 로렌츠를 쓴 이유는 꼬리가 두꺼워 15도 밖에서도
+    # 기울기가 살아 있기 때문이다.
+    #
+    # 사거리 밴드로 **엄격히** 게이트한다(update_damage 의 사거리 조건과 동일).
+    # 거리 계수(angle_full_range_m)를 재사용하면 2 km 부근에서 정렬 farming 이 생긴다.
+    # 부수 효과로 "밴드 안에 머무를 이유" 가 생겨 과근접 관통도 억제된다.
+    #
+    # 기본값 0.0 = 꺼짐. 실험 YAML 의 env_config.reward 에서 켠다.
+    "align_weight": 0.0,
+    "align_scale_deg": 5.0,
     # --- WEZ 안전 밴드 ---
     "wez_entry_bonus": 3.0,
     # 에피소드 내 반복 진입은 가치가 줄어 나갔다 들어오기를 farming할 수 없다.
@@ -498,6 +520,19 @@ def compute_reward(
 
         state._was_in_wez = in_wez
 
+    # --- 밴드 안 정렬 (사거리 밴드 안에서만) ---
+    # cos 이 평평한 1~15도 구간에 기울기를 만든다. 위 MY_REWARD_CONFIG 주석 참조.
+    align = 0.0
+    align_w = abs(_finite(cfg.get("align_weight", 0.0), 0.0))
+    align_scale = abs(_finite(cfg.get("align_scale_deg", 5.0), 5.0))
+    if align_w > 0.0 and align_scale > 0.0 and math.isfinite(distance_m) and math.isfinite(ata_deg):
+        d_ft = max(0.0, distance_m) * M_TO_FT
+        # update_damage 와 같은 사거리 조건. 각도는 여기서 게이트하지 않는다
+        # (게이트하면 다시 절벽이 되어 기울기를 만드는 목적이 사라진다).
+        if wez_min_ft - WEZ_RANGE_EPS_FT <= d_ft <= wez_max_ft + WEZ_RANGE_EPS_FT:
+            ratio = abs(ata_deg) / align_scale
+            align = align_w / (1.0 + ratio * ratio)
+
     # --- 접근(이탈) 보상 ---
     # 각도 게이트가 죽어 있는 구간(full_range 밖)에서 유일하게 남는 기울기다.
     # 거리 변화량에 비례하므로 왕복해도 합이 0 이라 farming 이 안 된다.
@@ -551,6 +586,7 @@ def compute_reward(
     components["wez_entry"] = wez_entry
     components["wez_hold"] = wez_hold
     components["overclose"] = overclose
+    components["align"] = align
     components["closure"] = closure
     components["energy"] = energy
     components["altitude"] = altitude

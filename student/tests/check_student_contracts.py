@@ -478,6 +478,7 @@ def test_reward_contract():
         "wez_entry",
         "wez_hold",
         "overclose",
+        "align",      # v5에서 추가: 밴드 안, cos 이 평평한 구간의 기울기
         "closure",    # v4에서 추가: 거리 게이트가 만든 무신호 구간의 접근 신호
         "energy",
         "altitude",   # v3에서 추가: 고도 안전 마진 dense 패널티
@@ -787,6 +788,67 @@ def test_reward_config_defaults_match():
     yaml_only_keys = {"mode", "damage_scale", "pursuit_scale", "low_altitude_penalty"}
     check(not (yaml_only_keys & set(rew_mod.MY_REWARD_CONFIG)),
           "MY_REWARD_CONFIG 는 기본 보상 전용 키(mode/damage_scale/...)를 갖지 않는다")
+
+
+def test_reward_align():
+    """밴드 안 정렬 항 (2026-08-05, 기본 꺼짐).
+
+    왜 필요한가
+    -----------
+    pursuit 은 cos(ATA) 라 0 근처에서 미분이 0 이다. ATA 15도 -> 1도 로 좁혀도
+    pursuit 증가분이 전체 0.0204 뿐인데, 정작 보상인 wez_entry(3.0)는 반각 1.0도
+    절벽 뒤에 있다. 30판 실측 |ATA| 최선이 5.37도에서 멈춘 것이 그 결과다.
+
+    여기서 재는 것은 **1~15도 구간에 기울기가 실제로 있는가** 다.
+    """
+    section("8-D. 밴드 안 정렬 항 align")
+    cfg = dict(rew_mod.MY_REWARD_CONFIG)
+    check(cfg.get("align_weight") == 0.0,
+          "기본값은 꺼짐(align_weight = 0) — 기존 실험의 의미를 바꾸지 않는다")
+
+    cfg["align_weight"] = 0.5
+    scale = cfg["align_scale_deg"]
+    in_band_m = 500.0          # 152.4 ~ 914.4 m 안
+    band_lo_m, band_hi_m = 152.4, 914.4
+
+    def comp(distance, ata, config=None):
+        rew_mod.reset_reward_state()
+        return reward(make_state(), make_state(),
+                      GeoStub(distance=distance, ata=ata, aa=0.0),
+                      cfg=config or cfg)[1]
+
+    check(comp(in_band_m, 0.0)["align"] > 0.0, "밴드 안 정조준 -> align > 0")
+    check(abs(comp(in_band_m, 0.0)["align"] - cfg["align_weight"]) < 1e-9,
+          f"ATA 0 에서 정확히 align_weight ({cfg['align_weight']})")
+
+    # 핵심: cos 이 평평한 구간에서 기울기가 살아 있는가.
+    a15, a5, a1 = (comp(in_band_m, x)["align"] for x in (15.0, 5.0, 1.0))
+    check(a1 > a5 > a15, f"1도 > 5도 > 15도 단조 ({a1:.3f} > {a5:.3f} > {a15:.3f})")
+    gain_align = a1 - a15
+    import math as _m
+    gain_cos = cfg["pursuit_weight"] * (_m.cos(_m.radians(1.0)) - _m.cos(_m.radians(15.0)))
+    check(gain_align > gain_cos * 10,
+          f"15->1도 이득이 pursuit(cos) 보다 10배 이상 크다 "
+          f"({gain_align:.4f} vs {gain_cos:.4f})")
+
+    # scale 에서 정확히 절반이어야 로렌츠 형태다.
+    check(abs(comp(in_band_m, scale)["align"] - cfg["align_weight"] / 2.0) < 1e-9,
+          f"ATA = align_scale({scale}도) 에서 정확히 절반")
+
+    # 사거리 밴드 밖에서는 꺼진다. 안 그러면 먼 거리에서 정렬 farming 이 생긴다.
+    check(comp(band_hi_m + 200.0, 0.0)["align"] == 0.0, "밴드 밖(원거리) -> align 0")
+    check(comp(band_lo_m - 50.0, 0.0)["align"] == 0.0, "최소 사거리 미만 -> align 0")
+    check(comp(band_lo_m + 1.0, 0.0)["align"] > 0.0, "밴드 하한 바로 안쪽 -> align > 0")
+
+    # 부호: 좌우 대칭이어야 한다(어느 쪽으로 틀어져도 같은 벌).
+    check(abs(comp(in_band_m, 8.0)["align"] - comp(in_band_m, -8.0)["align"]) < 1e-12,
+          "ATA 부호에 무관(대칭)")
+
+    # NaN/꺼짐
+    check(math.isfinite(comp(float("nan"), 0.0)["align"]), "distance NaN 이어도 finite")
+    check(comp(in_band_m, float("nan"))["align"] == 0.0, "ATA NaN 이면 align 0")
+    off = dict(cfg); off["align_weight"] = 0.0
+    check(comp(in_band_m, 0.0, off)["align"] == 0.0, "align_weight = 0 이면 정확히 0")
 
 
 def test_reward_closure():
@@ -1158,6 +1220,7 @@ def main() -> int:
     test_reward_angle_shaping()
     test_reward_angle_range_gate()
     test_reward_closure()
+    test_reward_align()
     test_reward_config_defaults_match()
     test_reward_wez_band()
     test_reward_energy()
